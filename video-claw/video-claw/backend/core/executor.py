@@ -48,13 +48,18 @@ error does not chain the vendor exception. No spent row is written.
 Spent and done are committed in one transaction after submit returns.
 
 Before ``adapter.submit``, the same claim writes ``submit_dispatched`` on
-the node and commits it. A kill during the poll leaves that marker.
+the node and commits it. The marker stays unless this process is sure the
+vendor did not accept a generation: a missing key, local parameter or
+asset failure, request construction before HTTP, or a terminal vendor
+rejection (failed, expired, or a clear 4xx). Timeouts, connect and read
+errors, download failures, a malformed return, and any other exception
+keep the marker. The quote is skipped, the node returns to
+``awaiting_user``, and only ``retry_video_submit`` may send again. When
+the create call returns a task id it is stored as ``vendor_task_id`` and
+retry polls that task instead of creating another one.
 After ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes), recovery and the
-next ``confirm`` do not submit again: the node returns to
-``awaiting_user`` with a note that the attempt may have reached the
-vendor. ``retry_video_submit`` is the explicit retry. It clears the
-marker only after that call, then submits. A stale ``running`` row with
-no marker died before the vendor call and can be claimed again.
+next ``confirm`` do not submit again. A stale ``running`` row with no
+marker died before the vendor call and can be claimed again.
 
 The Seedance client stops the whole submit at 20 minutes
 (``SUBMIT_DEADLINE_SECONDS``), under the 30-minute TTL. The poll's own
@@ -114,6 +119,9 @@ SUBMIT_DISPATCHED = "submit_dispatched"
 SUBMIT_DISPATCHED_NOTE = (
     "previous submit may have reached the vendor and was not finished; "
     "it was not sent again. Call retry_video_submit to confirm a manual retry."
+)
+ORPHAN_RESULT_NOTE = (
+    "result reached vendor but state was overwritten; manual check needed"
 )
 
 
@@ -351,6 +359,42 @@ def _batch_provider_called(nodes: Any) -> bool:
 def _dispatched(node) -> bool:
     metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
     return bool(metadata.get(SUBMIT_DISPATCHED))
+
+
+def _request_was_not_sent(exc: BaseException) -> bool:
+    """True when the vendor cannot have accepted a generation."""
+    if isinstance(exc, FileNotFoundError):
+        return True
+    if type(exc).__name__ in {"UnsupportedParam", "SubmitNotSent"}:
+        return True
+    text = str(exc)
+    return any(
+        part in text
+        for part in (
+            "ARK_API_KEY not set",
+            "reference image file is missing",
+            "model is not registered",
+        )
+    )
+
+
+def _terminal_vendor_rejection(exc: BaseException) -> bool:
+    """Vendor finished the task as failed or expired, or rejected it with 4xx."""
+    text = str(exc)
+    if "视频生成failed" in text or "视频生成expired" in text:
+        return True
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if isinstance(code, int) and 400 <= code < 500 and code not in (408, 429):
+        return True
+    return False
+
+
+def _keep_dispatched_marker(exc: BaseException) -> bool:
+    """Keep the marker unless the generation was surely not accepted."""
+    if _request_was_not_sent(exc) or _terminal_vendor_rejection(exc):
+        return False
+    return True
 
 
 def _ledger_view(entry: dict) -> dict:
@@ -809,8 +853,8 @@ class GraphExecutor:
             if note is not None:
                 graph.update_metadata(node_id, submit_error=note)
             if not keep_dispatched:
-                graph.update_metadata(node_id, submit_dispatched=None)
-            self._save(project_id, graph)
+                graph.update_metadata(node_id, submit_dispatched=None, vendor_task_id=None)
+            self._save(project_id, graph, owned={node_id})
 
     def _park_dispatched_attempt(
         self,
@@ -835,7 +879,7 @@ class GraphExecutor:
             return
         if status == NodeStatus.RUNNING:
             graph.transition(node_id, NodeStatus.AWAITING_USER)
-        self._save(project_id, graph)
+        self._save(project_id, graph, owned={node_id})
 
     def _abandon_submit_claim(self, project_id: str, node_id: str) -> None:
         """Reload the graph, then release only if this claim still owns the row."""
@@ -871,8 +915,7 @@ class GraphExecutor:
         ):
             raise _GateError("node submit is already in progress")
         graph.update_metadata(node_id, submit_dispatched=None, submit_error=None)
-        with transaction(self.conn):
-            GraphStore.save(self.conn, project_id, graph.to_dict())
+        self._save(project_id, graph, owned={node_id}, touch_state=False)
 
     def _persist_dispatched_marker(
         self,
@@ -887,8 +930,7 @@ class GraphExecutor:
         during the poll.
         """
         graph.update_metadata(node_id, submit_dispatched=True)
-        with transaction(self.conn):
-            GraphStore.save(self.conn, project_id, graph.to_dict())
+        self._save(project_id, graph, owned={node_id}, touch_state=False)
 
     def _node_state_row(self, project_id: str, node_id: str):
         return self.conn.execute(
@@ -910,6 +952,80 @@ class GraphExecutor:
         if not rows:
             return None
         return rows[-1]
+
+    def _claim_still_owned(self, project_id: str, node_id: str, entry_id: str) -> bool:
+        """True when this claim's stamp and reserved quote are still the live ones."""
+        stamp = self._claim_stamps.get(node_id)
+        row = self._node_state_row(project_id, node_id)
+        if stamp is None or row is None:
+            return False
+        if row["status"] != NodeStatus.RUNNING.value or row["updated_at"] != stamp:
+            return False
+        try:
+            entry = LedgerStore.get(self.conn, entry_id)
+        except StorageError:
+            return False
+        if entry.get("node_id") != node_id or entry.get("status") != QUOTED:
+            return False
+        return entry.get("actual_amount") is None
+
+    def _keep_orphaned_result(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        result: Any,
+        view: dict,
+    ) -> dict:
+        """The vendor returned, but this claim no longer owns the node."""
+        entry_id = view.get("entry_id")
+        if isinstance(entry_id, str):
+            try:
+                entry = LedgerStore.get(self.conn, entry_id)
+            except StorageError:
+                entry = None
+            if (
+                isinstance(entry, dict)
+                and entry.get("node_id") == node_id
+                and entry.get("status") == QUOTED
+                and entry.get("actual_amount") is None
+            ):
+                LedgerStore.update(self.conn, entry_id, status=SKIPPED)
+        row = self._node_state_row(project_id, node_id)
+        already_done = row is not None and row["status"] == NodeStatus.DONE.value
+        if not already_done and graph.node(node_id).status == NodeStatus.RUNNING:
+            graph.transition(node_id, NodeStatus.AWAITING_USER)
+        public = {}
+        url = None
+        if isinstance(result, dict):
+            public = {key: value for key, value in result.items() if key != "provider_called"}
+            url = public.get("result_id")
+        graph.update_metadata(
+            node_id,
+            result=public or None,
+            notes=ORPHAN_RESULT_NOTE,
+            submit_error=ORPHAN_RESULT_NOTE,
+            submit_dispatched=True,
+        )
+        if not already_done:
+            self._save(project_id, graph, owned={node_id})
+        body = self._pack(
+            project_id,
+            graph,
+            node_id,
+            status="done" if already_done else "awaiting_user",
+            gate="none",
+            quote=view.get("quote"),
+            entry_id=entry_id if isinstance(entry_id, str) else None,
+            message=ORPHAN_RESULT_NOTE,
+            submitted=False,
+            spent=False,
+            call_confirmed=True,
+            provider_called=True,
+        )
+        if isinstance(url, str):
+            body["result_id"] = url
+        return body
 
     def decline_node(self, project_id: str, node_id: str) -> dict:
         graph = self._load(project_id)
@@ -1343,6 +1459,13 @@ class GraphExecutor:
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
+        if (
+            fields.get("modality") == "video"
+            and call_confirmed
+            and node_id in self._claim_stamps
+            and not self._claim_still_owned(project_id, node_id, view["entry_id"])
+        ):
+            return self._keep_orphaned_result(project_id, graph, node_id, result, view)
         # Spent and done become visible together. The vendor call already
         # returned, so this transaction does not hold the claim across poll.
         with transaction(self.conn):
@@ -1358,8 +1481,9 @@ class GraphExecutor:
                 pending_call=None,
                 submit_error=None,
                 submit_dispatched=None,
+                vendor_task_id=None,
             )
-            self._save(project_id, graph)
+            self._save(project_id, graph, owned={node_id})
         body = self._pack(
             project_id,
             graph,
@@ -1424,9 +1548,20 @@ class GraphExecutor:
             params = self._with_reference_files(params, references)
         except Exception as exc:
             self._abort_reserved_video(project_id, graph, node_id, exc)
+        meta = graph.node(node_id).metadata
+        if isinstance(meta, dict) and meta.get("vendor_task_id"):
+            params["vendor_task_id"] = meta["vendor_task_id"]
         # Commit the marker before the vendor call. A kill during poll leaves
         # it set so a later confirm does not submit a second time.
         self._persist_dispatched_marker(project_id, graph, node_id)
+
+        def _on_task(task_id: str) -> None:
+            if not isinstance(task_id, str) or not task_id.strip():
+                return
+            graph.update_metadata(node_id, vendor_task_id=task_id.strip(), submit_dispatched=True)
+            self._save(project_id, graph, owned={node_id}, touch_state=False)
+
+        params["on_task"] = _on_task
         try:
             vendor = adapter.submit(spec, params)
         except Exception as exc:
@@ -1482,8 +1617,11 @@ class GraphExecutor:
         """Skip the reserved quote, drop the claim, and surface the error."""
         self._release_quoted_reservation(project_id, node_id)
         message = _redact_secret(str(exc).strip() or exc.__class__.__name__)
+        keep = _keep_dispatched_marker(exc)
+        if keep:
+            message = f"{message}; {SUBMIT_DISPATCHED_NOTE}"
         graph.update_metadata(node_id, submit_error=message)
-        self._release_submit_claim(project_id, graph, node_id)
+        self._release_submit_claim(project_id, graph, node_id, keep_dispatched=keep)
         raise _GateError(f"video submit failed: {message}") from None
 
     def _submit(self, call: dict) -> Any:
@@ -1722,11 +1860,72 @@ class GraphExecutor:
             raise _GateError("project has no dependency graph")
         return DependencyGraph.from_dict(document)
 
-    def _save(self, project_id: str, graph: DependencyGraph) -> None:
-        GraphStore.save(self.conn, project_id, graph.to_dict())
+    def _save(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        *,
+        owned: Optional[set] = None,
+        touch_state: bool = True,
+    ) -> None:
+        """Persist the graph without clobbering another node's live submit.
+
+        A node whose database row is ``running`` or whose stored metadata has
+        ``submit_dispatched`` keeps that claim unless this save owns the node.
+        ``touch_state`` false updates the graph JSON only, so a marker write
+        does not move the claim stamp.
+        """
+        owned = set(owned or ())
+        snapshot = graph.to_dict()
+        stored = GraphStore.load(self.conn, project_id)
+        stored_nodes = {}
+        if isinstance(stored, dict):
+            for item in stored.get("nodes") or []:
+                if isinstance(item, dict) and isinstance(item.get("id"), str):
+                    stored_nodes[item["id"]] = item
+        running = {
+            row["node_id"]
+            for row in self.conn.execute(
+                "SELECT node_id, status FROM node_state WHERE project_id = ? AND status = ?",
+                (project_id, NodeStatus.RUNNING.value),
+            )
+        }
+        protected: set[str] = set()
+        for node in snapshot.get("nodes") or []:
+            node_id = node.get("id")
+            if not isinstance(node_id, str) or node_id in owned or node_id not in graph:
+                continue
+            previous = stored_nodes.get(node_id) or {}
+            previous_meta = previous.get("metadata") if isinstance(previous.get("metadata"), dict) else {}
+            holds = (
+                node_id in running
+                or previous.get("status") == NodeStatus.RUNNING.value
+                or bool(previous_meta.get(SUBMIT_DISPATCHED))
+            )
+            if not holds:
+                continue
+            memory = graph.node(node_id)
+            if memory.status == NodeStatus.RUNNING or _dispatched(memory):
+                continue
+            protected.add(node_id)
+            if node_id in running or previous.get("status") == NodeStatus.RUNNING.value:
+                node["status"] = NodeStatus.RUNNING.value
+            elif previous.get("status"):
+                node["status"] = previous["status"]
+            merged = dict(node.get("metadata") or {})
+            if previous_meta.get(SUBMIT_DISPATCHED):
+                merged[SUBMIT_DISPATCHED] = previous_meta[SUBMIT_DISPATCHED]
+            if previous_meta.get("vendor_task_id"):
+                merged["vendor_task_id"] = previous_meta["vendor_task_id"]
+            node["metadata"] = merged
+        GraphStore.save(self.conn, project_id, snapshot)
+        if not touch_state:
+            return
         now = utc_now()
         with transaction(self.conn):
             for node_id in graph.topological_order():
+                if node_id in protected:
+                    continue
                 require_id(node_id, "node_id")
                 self.conn.execute(
                     """

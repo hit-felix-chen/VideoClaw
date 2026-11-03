@@ -58,15 +58,13 @@ def conn(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _no_live_video(monkeypatch):
-    def explode(*_args, **_kwargs):
-        raise AssertionError("live video provider called")
-
     import models.video_seedance as video_seedance
 
-    monkeypatch.setattr(
-        video_seedance.SeedanceVideoClient, "generate_video", explode, raising=False
-    )
-    monkeypatch.setattr(video_seedance.SeedanceVideoClient, "_submit_task", explode, raising=False)
+    def explode(*_args, **_kwargs):
+        raise AssertionError("live http")
+
+    monkeypatch.setattr(video_seedance.requests, "post", explode)
+    monkeypatch.setattr(video_seedance.requests, "get", explode)
     submitted.clear()
     yield
     submitted.clear()
@@ -275,11 +273,17 @@ def test_failed_submit_can_be_confirmed_again(conn):
     with pytest.raises(StorageError):
         executor.confirm(project_id, "video")
     assert _status(conn, project_id) == "awaiting_user"
-    assert _metadata(conn, project_id)["submit_error"] == "ark down"
+    assert "ark down" in _metadata(conn, project_id)["submit_error"]
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    assert "retry_video_submit" in _metadata(conn, project_id)["submit_error"]
+
+    with pytest.raises(StorageError):
+        executor.confirm(project_id, "video")
+    assert len(adapter.calls) == 1
 
     adapter.error = None
     adapter.result = "https://cdn.example/retry.mp4"
-    done = executor.confirm(project_id, "video")
+    done = executor.retry_video_submit(project_id, "video")
     assert len(adapter.calls) == 2
     assert done["status"] == "done"
     assert done["provider_called"] is True
@@ -440,7 +444,8 @@ def test_submit_error_redacts_the_ark_key(conn, monkeypatch):
     assert secret not in str(failed.value)
     assert "***" in str(failed.value)
     assert failed.value.__cause__ is None
-    assert _metadata(conn, project_id)["submit_error"] == "unauthorized ***"
+    assert "unauthorized ***" in _metadata(conn, project_id)["submit_error"]
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
     assert secret not in _metadata(conn, project_id)["submit_error"]
 
 
@@ -746,3 +751,323 @@ def test_poll_deadline_is_under_the_claim_ttl_and_stops(monkeypatch):
     with pytest.raises(TimeoutError):
         client._poll_until_done("task-1", deadline=time.monotonic() - 1)
     assert calls == []
+
+
+class _Http:
+    def __init__(self, payload, status=200, stream_error=None):
+        self.status_code = status
+        self.ok = 200 <= status < 300
+        self.text = str(payload)
+        self._payload = payload
+        self._stream_error = stream_error
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.ok:
+            return
+        import requests
+
+        error = requests.HTTPError(f"{self.status_code}")
+        error.response = self
+        raise error
+
+    def iter_content(self, chunk_size=8192):
+        if self._stream_error is not None:
+            raise self._stream_error
+        yield b"mp4"
+
+
+def _install_seedance_http(monkeypatch, *, post, get, deadline=None):
+    import models.video_seedance as video_seedance
+
+    monkeypatch.setattr(video_seedance.requests, "post", post)
+    monkeypatch.setattr(video_seedance.requests, "get", get)
+    monkeypatch.setattr(video_seedance.time, "sleep", lambda *_args, **_kwargs: None)
+    if deadline is not None:
+        monkeypatch.setattr(video_seedance, "SUBMIT_DEADLINE_SECONDS", deadline)
+
+
+def _count_ark_submit(monkeypatch):
+    from models.middle.providers import ArkVideoAdapter
+
+    calls = []
+    original = ArkVideoAdapter.submit
+
+    def wrapped(self, spec, params, *, transport=None):
+        calls.append(params.get("vendor_task_id"))
+        return original(self, spec, params, transport=transport)
+
+    monkeypatch.setattr(ArkVideoAdapter, "submit", wrapped)
+    return calls
+
+
+def _confirm_real(conn, project_id):
+    from config import Config
+
+    previous = Config.ARK_API_KEY
+    Config.ARK_API_KEY = "unit-test-key"
+    try:
+        return GraphExecutor(conn).confirm(project_id, "video")
+    finally:
+        Config.ARK_API_KEY = previous
+
+
+def test_post_timeout_is_bounded_by_the_deadline(monkeypatch):
+    import models.video_seedance as video_seedance
+
+    seen = {}
+
+    def fake_post(_url, **kwargs):
+        seen["timeout"] = kwargs["timeout"]
+        return _Http({"id": "task-bound"})
+
+    def fake_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({})
+        return _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}})
+
+    _install_seedance_http(monkeypatch, post=fake_post, get=fake_get, deadline=4)
+    client = video_seedance.SeedanceVideoClient(api_key="x", base_url="https://example.invalid")
+    client.timeout = 120
+    client.generate_video("hello", None, "/tmp/seedance-bound.mp4", model=SEEDANCE, duration=5)
+    assert seen["timeout"] <= 4
+    assert seen["timeout"] < client.timeout
+
+
+def test_uncertain_seedance_failures_keep_the_marker(conn, monkeypatch):
+    import requests
+
+    import models.video_seedance as video_seedance
+
+    monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    calls = _count_ark_submit(monkeypatch)
+    posts = []
+
+    def running_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({})
+        return _Http({"status": "running"})
+
+    def succeed_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({})
+        return _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}})
+
+    scenarios = [
+        (
+            "poll-timeout",
+            lambda: _install_seedance_http(
+                monkeypatch,
+                post=lambda _url, **kwargs: posts.append(kwargs.get("timeout")) or _Http({"id": "task-poll"}),
+                get=running_get,
+                deadline=0.2,
+            ),
+        ),
+        (
+            "post-read-timeout",
+            lambda: _install_seedance_http(
+                monkeypatch,
+                post=lambda _url, **_kwargs: (_ for _ in ()).throw(requests.ReadTimeout("read timed out")),
+                get=succeed_get,
+            ),
+        ),
+        (
+            "download-failure",
+            lambda: _install_seedance_http(
+                monkeypatch,
+                post=lambda _url, **_kwargs: _Http({"id": "task-download"}),
+                get=lambda _url, **kwargs: (_ for _ in ()).throw(OSError("disk full"))
+                if kwargs.get("stream")
+                else _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}}),
+            ),
+        ),
+    ]
+    # Run each scenario on its own project so a kept marker cannot leak across cases.
+    first = True
+    for name, install in scenarios:
+        if not first:
+            project_id, hero = _ready_video(conn)
+            _portrait(conn, hero["id"])
+            GraphExecutor(conn).run_node(project_id, "video")
+        first = False
+        posts.clear()
+        before = len(calls)
+        install()
+        with pytest.raises(StorageError) as failed:
+            GraphExecutor(conn).confirm(project_id, "video")
+        assert name
+        assert "retry_video_submit" in str(failed.value)
+        meta = _metadata(conn, project_id)
+        assert meta["submit_dispatched"] is True
+        assert _status(conn, project_id) == "awaiting_user"
+        assert len(calls) == before + 1
+        with pytest.raises(StorageError):
+            GraphExecutor(conn).confirm(project_id, "video")
+        assert len(calls) == before + 1
+        install()
+        if name == "poll-timeout":
+            monkeypatch.setattr(video_seedance, "SUBMIT_DEADLINE_SECONDS", 20 * 60)
+            monkeypatch.setattr(video_seedance.requests, "get", succeed_get)
+        elif name == "post-read-timeout":
+            monkeypatch.setattr(
+                video_seedance.requests,
+                "post",
+                lambda _url, **_kwargs: _Http({"id": "task-again"}),
+            )
+            monkeypatch.setattr(video_seedance.requests, "get", succeed_get)
+        else:
+            monkeypatch.setattr(video_seedance.requests, "get", succeed_get)
+        if name == "poll-timeout":
+            assert meta.get("vendor_task_id") == "task-poll"
+        done = GraphExecutor(conn).retry_video_submit(project_id, "video")
+        assert done["status"] == "done"
+        assert len(calls) == before + 2
+        if name == "poll-timeout":
+            assert len(posts) == 1
+
+
+def test_vendor_failed_clears_the_marker(conn, monkeypatch):
+    monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    calls = _count_ark_submit(monkeypatch)
+    attempts = {"n": 0}
+
+    def fake_post(_url, **_kwargs):
+        attempts["n"] += 1
+        return _Http({"id": f"task-{attempts['n']}"})
+
+    def fake_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({})
+        if attempts["n"] == 1:
+            return _Http({"status": "failed", "error": {"message": "rejected prompt"}})
+        return _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}})
+
+    _install_seedance_http(monkeypatch, post=fake_post, get=fake_get)
+    with pytest.raises(StorageError) as failed:
+        GraphExecutor(conn).confirm(project_id, "video")
+    assert "failed" in str(failed.value)
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
+    assert len(calls) == 1
+    done = GraphExecutor(conn).confirm(project_id, "video")
+    assert done["status"] == "done"
+    assert len(calls) == 2
+
+
+def test_other_node_save_does_not_double_spend(conn):
+    import threading
+
+    project = ProjectStore.create(conn, "并行", budget_cap=200)
+    project_id = project["id"]
+    hero = AssetStore.create(conn, project_id=project_id, name="林夏", kind="character")
+    _portrait(conn, hero["id"])
+    graph = DependencyGraph()
+    graph.add_node("script", kind="script", metadata={"text": "开场"})
+    graph.add_node(
+        "video",
+        kind="shot_segment",
+        metadata={
+            "model_id": SEEDANCE,
+            "resolution": "720p",
+            "includes_video_input": False,
+            "completion_tokens": 1_000_000,
+            "shot_duration": 6,
+            "text": "@林夏 走进教室",
+        },
+    )
+    GraphStore.save(conn, project_id, graph.to_dict())
+    GraphExecutor(conn).run_node(project_id, "video")
+    data_dir = Database.data_dir_of(conn)
+    calls = []
+    script_entered = threading.Event()
+    video_in = threading.Event()
+    release_video = threading.Event()
+
+    def runner(call):
+        if call.get("node_id") == "script":
+            script_entered.set()
+            assert video_in.wait(5)
+            return {"provider_called": False, "kind": "script"}
+        from core.nodes.dispatch import dispatch_node
+
+        return dispatch_node(call)
+
+    class Slow:
+        def submit(self, spec, params, *, transport=None):
+            calls.append(spec.id)
+            video_in.set()
+            assert release_video.wait(5)
+            return RESULT_URL
+
+    def run_script():
+        connection = Database.connect(data_dir)
+        try:
+            GraphExecutor(connection, runner=runner).run_node(project_id, "script")
+        finally:
+            connection.close()
+
+    def run_confirm():
+        connection = Database.connect(data_dir)
+        try:
+            GraphExecutor(connection, runner=runner, video_adapter=Slow()).confirm(project_id, "video")
+        finally:
+            connection.close()
+
+    script_thread = threading.Thread(target=run_script, daemon=True)
+    video_thread = threading.Thread(target=run_confirm, daemon=True)
+    script_thread.start()
+    assert script_entered.wait(5)
+    video_thread.start()
+    assert video_in.wait(5)
+    script_thread.join(5)
+    assert not script_thread.is_alive()
+    late = Database.connect(data_dir)
+    try:
+        with pytest.raises(StorageError):
+            GraphExecutor(late, runner=runner, video_adapter=Slow()).confirm(project_id, "video")
+    finally:
+        late.close()
+    assert calls == [SEEDANCE]
+    release_video.set()
+    video_thread.join(5)
+    assert not video_thread.is_alive()
+    assert calls == [SEEDANCE]
+    spent = [row for row in _video_rows(conn, project_id) if row["status"] == SPENT]
+    assert len(spent) == 1
+    assert spent[0]["actual_amount"] == 70.0
+
+
+def test_replaced_claim_stamp_does_not_spend_the_returned_url(conn):
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+
+    class StampReplacer:
+        def submit(self, spec, params, *, transport=None):
+            conn.execute(
+                """
+                UPDATE node_state SET updated_at = ?
+                WHERE project_id = ? AND node_id = ?
+                """,
+                ("2099-01-01T00:00:00.000000Z", project_id, "video"),
+            )
+            return RESULT_URL
+
+    done = GraphExecutor(conn, video_adapter=StampReplacer()).confirm(project_id, "video")
+    assert done["status"] == "awaiting_user"
+    assert done["spent"] is False
+    assert "manual check needed" in done["message"]
+    assert done["result_id"] == RESULT_URL
+    meta = _metadata(conn, project_id)
+    assert meta["notes"] == "result reached vendor but state was overwritten; manual check needed"
+    assert meta["result"]["result_id"] == RESULT_URL
+    assert meta["submit_dispatched"] is True
+    assert not any(row["status"] == SPENT for row in _video_rows(conn, project_id))
+    assert _status(conn, project_id) == "awaiting_user"

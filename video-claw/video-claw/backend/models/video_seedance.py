@@ -74,8 +74,15 @@ class SeedanceVideoClient:
             raise RuntimeError("ARK_API_KEY not set.")
 
         deadline = time.monotonic() + SUBMIT_DEADLINE_SECONDS
-        # 1. 提交任务
+        on_task = kwargs.pop("on_task", None)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Seedance 视频生成超时")
+        kwargs["post_timeout"] = min(self.timeout, remaining)
+        # 1. 提交任务。POST 的超时不能超过整次 submit 还剩的时间。
         task_id = self._submit_task(prompt, image_path, model, duration, **kwargs)
+        if callable(on_task):
+            on_task(task_id)
         self._check_deadline(deadline, task_id)
 
         # 2. 轮询等待。到总时限后自己失败，不等到 74 分钟被外部抢占。
@@ -86,6 +93,17 @@ class SeedanceVideoClient:
         remaining = max(1, int(deadline - time.monotonic()))
         self._download_video(video_url, save_path, timeout=min(120, remaining))
 
+        return video_url
+
+    def resume(self, task_id: str, save_path: str) -> str:
+        """Poll an existing task and download it. Does not create a new generation."""
+        if not self.api_key:
+            raise RuntimeError("ARK_API_KEY not set.")
+        deadline = time.monotonic() + SUBMIT_DEADLINE_SECONDS
+        video_url = self._poll_until_done(task_id, deadline=deadline)
+        self._check_deadline(deadline, task_id)
+        remaining = max(1, int(deadline - time.monotonic()))
+        self._download_video(video_url, save_path, timeout=min(120, remaining))
         return video_url
 
     @staticmethod
@@ -156,11 +174,13 @@ class SeedanceVideoClient:
                 payload[key] = kwargs[key]
 
         logger.info(f"SeedanceVideoClient: 提交任务 model={model}, duration={duration}s")
+        post_timeout = kwargs.pop("post_timeout", None)
+        timeout = self.timeout if post_timeout is None else min(self.timeout, post_timeout)
         resp = requests.post(
             url,
             headers=self._headers(),
             json=payload,
-            timeout=self.timeout,
+            timeout=timeout,
             proxies=Config.requests_proxies("ark"),
         )
         
