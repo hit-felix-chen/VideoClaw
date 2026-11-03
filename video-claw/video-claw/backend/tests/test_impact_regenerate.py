@@ -5,6 +5,7 @@ runs and before any ledger row is written.
 """
 
 import json
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,8 +26,9 @@ from storage import (
     LookStore,
     ProjectStore,
 )
+from storage.confirmations import IMPACT_TOKEN_TTL_SECONDS
 from storage.database import StorageError
-from storage.ledger import AWAITING_USER, SPENT
+from storage.ledger import AWAITING_USER, QUOTED, SKIPPED, SPENT
 
 VIDEO = "r7b-video-per-second"
 IMAGE = "r7b-image-per-image"
@@ -227,6 +229,27 @@ def _video_only(conn, cap):
     graph.add_node("shot", kind="shot_segment", metadata={"model_id": VIDEO})
     graph.add_edge(asset["id"], "shot")
     _done(graph, asset["id"], "shot")
+    GraphStore.save(conn, project["id"], graph.to_dict())
+    LookStore.update(conn, look["id"], prompt="night")
+    return project, look, asset
+
+
+def _frame_and_note(conn, cap):
+    """Independent image and VLM successors. Frame is ahead of note."""
+    project = ProjectStore.create(conn, "R7b", budget_cap=cap)
+    asset = AssetStore.create(conn, project_id=project["id"], name="林夏", kind="character")
+    look = LookStore.create(conn, asset_id=asset["id"], name="日", prompt="day")
+    graph = DependencyGraph()
+    graph.add_node(asset["id"], kind="character")
+    graph.add_node("frame", kind="keyframe", metadata={"model_id": IMAGE})
+    graph.add_node(
+        "note",
+        kind="vlm",
+        metadata={"model_id": VLM, "completion_tokens": 1_000_000},
+    )
+    graph.add_edge(asset["id"], "frame")
+    graph.add_edge(asset["id"], "note")
+    _done(graph, asset["id"], "frame", "note")
     GraphStore.save(conn, project["id"], graph.to_dict())
     LookStore.update(conn, look["id"], prompt="night")
     return project, look, asset
@@ -477,6 +500,131 @@ def test_over_budget_confirm_pauses_and_does_not_skip_or_double_spend(opened, pr
     executor.confirm_impact(project["id"], look["id"], token, model=VIDEO)
     assert seen == ["shot"]
     assert _charges(LedgerStore.list(conn, project["id"])) == _charges(spent)
+
+
+def test_budget_pause_stops_before_an_independent_later_node(opened, priced):
+    conn, _data = opened
+    project, look, _asset = _frame_and_note(conn, cap=4)
+    issued = _quote_impact(conn, project["id"], look["id"])
+    assert issued["impact_nodes"] == ["frame", "note"]
+    seen, runner = _calls()
+    paused = GraphExecutor(conn, runner).confirm_impact(
+        project["id"],
+        look["id"],
+        issued["confirm_token"],
+        model=IMAGE,
+    )
+    assert paused["halted"] is True
+    assert [item["node_id"] for item in paused["nodes"]] == ["frame"]
+    assert paused["nodes"][0]["status"] == "awaiting_user"
+    assert paused["nodes"][0]["gate"] == "budget"
+    assert paused["nodes"][0]["spent"] is False
+    assert "是否上调" in paused["nodes"][0]["message"]
+    assert seen == []
+    rows = LedgerStore.list(conn, project["id"])
+    assert [row["node_id"] for row in rows] == ["frame"]
+    assert rows[0]["status"] == AWAITING_USER
+    assert rows[0]["actual_amount"] is None
+    assert rows[0]["quote_amount"] == 6.0
+    assert not any(row["status"] == SPENT for row in rows)
+    assert _status(conn, project["id"], "note") == "stale"
+
+
+def test_runner_failure_releases_the_quote_and_a_second_confirm_returns_it(opened, priced):
+    conn, _data = opened
+    project, look, _asset = _frame_and_note(conn, cap=100)
+    issued = _quote_impact(conn, project["id"], look["id"])
+    token = issued["confirm_token"]
+    image_max = quote(QuoteRequest(model_id=IMAGE, modality="image", asset_count=1))["max"]
+
+    def runner(call):
+        seen.append(call["node_id"])
+        if call["node_id"] == "note":
+            raise RuntimeError("provider exploded")
+        return {"provider_called": False}
+
+    seen = []
+    executor = GraphExecutor(conn, runner)
+    with pytest.raises(StorageError) as failed:
+        executor.confirm_impact(project["id"], look["id"], token, model=IMAGE)
+    assert "note" in str(failed.value)
+    assert "provider exploded" in str(failed.value)
+
+    rows = LedgerStore.list(conn, project["id"])
+    by_node = {row["node_id"]: row for row in rows}
+    assert set(by_node) == {"frame", "note"}
+    assert by_node["frame"]["status"] == SPENT
+    assert by_node["frame"]["actual_amount"] == image_max
+    assert by_node["note"]["status"] == SKIPPED
+    assert by_node["note"]["actual_amount"] is None
+    assert not any(row["status"] == QUOTED for row in rows)
+    stored = _token_row(conn, token)
+    assert stored["consumed_at"] is not None
+    saved = json.loads(stored["result_json"])
+    assert saved["failed"] is True
+    assert saved["failed_node_id"] == "note"
+    assert saved["error"] == "provider exploded"
+    assert saved["spent_node_ids"] == ["frame"]
+    assert seen == ["frame", "note"]
+    first_charges = _charges(rows)
+
+    again_seen = []
+
+    def quiet(call):
+        again_seen.append(call["node_id"])
+        raise AssertionError("second confirm ran a node")
+
+    repeated = GraphExecutor(conn, quiet).confirm_impact(
+        project["id"],
+        look["id"],
+        token,
+        model=IMAGE,
+    )
+    assert again_seen == []
+    assert repeated["failed"] is True
+    assert repeated["failed_node_id"] == "note"
+    assert repeated["error"] == "provider exploded"
+    assert repeated["spent_node_ids"] == ["frame"]
+    assert [item["node_id"] for item in repeated["nodes"]] == ["frame"]
+    assert repeated["nodes"][0]["entry_id"] == by_node["frame"]["id"]
+    assert _charges(LedgerStore.list(conn, project["id"])) == first_charges
+
+
+def test_token_for_a_different_look_is_rejected_and_not_consumed(opened, priced):
+    conn, _data = opened
+    project, look, asset = _image_only(conn, cap=100)
+    issued = _quote_impact(conn, project["id"], look["id"])
+    token = issued["confirm_token"]
+    other = LookStore.create(conn, asset_id=asset["id"], name="夜", prompt="other")
+    seen, runner = _calls()
+    executor = GraphExecutor(conn, runner)
+    with pytest.raises(StorageError) as rejected:
+        executor.confirm_impact(project["id"], other["id"], token, model=IMAGE)
+    assert "does not match this look" in str(rejected.value)
+    assert _token_row(conn, token)["consumed_at"] is None
+    assert LedgerStore.list(conn, project["id"]) == []
+    assert seen == []
+
+    done = executor.confirm_impact(project["id"], look["id"], token, model=IMAGE)
+    assert done["spent"] is True
+    assert seen == ["frame"]
+    rows = LedgerStore.list(conn, project["id"])
+    assert len(rows) == 1
+    assert rows[0]["node_id"] == "frame"
+    assert rows[0]["status"] == SPENT
+    assert _token_row(conn, token)["consumed_at"] is not None
+
+
+def test_impact_token_ttl_is_1800_seconds(opened, priced):
+    conn, _data = opened
+    project, look, _asset = _image_only(conn)
+    issued = _quote_impact(conn, project["id"], look["id"])
+    assert IMPACT_TOKEN_TTL_SECONDS == 1800
+    row = _token_row(conn, issued["confirm_token"])
+    issued_at = datetime.strptime(row["issued_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    expires_at = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    assert (expires_at - issued_at).total_seconds() == 1800
+    assert _token_row(conn, issued["confirm_token"])["consumed_at"] is None
 
 
 @pytest.fixture

@@ -14,10 +14,12 @@ node and leaves its successors stale.
 Confirming a look impact is the path that does rerun the confirmed
 downstream set. Each of those nodes goes through ``run_node``. A video node
 then ``confirm``s, which authorizes the quote and writes the ledger. Image,
-VLM, and TTS stay on the immediate reserve inside ``run_node``. Over budget
-pauses and asks for a higher cap. The confirmation token is a row in
-``impact_confirmation``: one project, one impact set, single-use, and it
-expires.
+VLM, and TTS stay on the immediate reserve inside ``run_node``. The first
+node that is still awaiting the user stops the rest of the batch, so a
+later node is not reserved or spent in that confirm. A runner failure
+releases that node's unsettled quote and stores the failure on the consumed
+token. The confirmation token is a row in ``impact_confirmation``: one
+project, one impact set, single-use, and it expires.
 
 A model with no documented API price is not given a number. Segment
 duration for a video quote comes from that model's verified capability,
@@ -47,7 +49,7 @@ from models.middle.pricing import QuoteRequest, quote
 from models.middle.registry import ModelRegistry
 from storage.confirmations import ImpactConfirmation
 from storage.database import StorageError, require_id, transaction, utc_now
-from storage.ledger import AWAITING_USER, LedgerStore
+from storage.ledger import AWAITING_USER, QUOTED, SKIPPED, LedgerStore
 from storage.projects import GraphStore, ProjectStore
 from storage.staleness import RegenerationQuote
 
@@ -132,11 +134,21 @@ def _impact_node_ids(graph: DependencyGraph, asset_id: str | None) -> list[str]:
     return chosen
 
 
-def _execution_summary(nodes: list[dict]) -> dict:
+def _execution_summary(nodes: list[dict], *, halted: bool = False) -> dict:
+    spent_ids = [
+        item["node_id"]
+        for item in nodes
+        if item.get("spent") and isinstance(item.get("node_id"), str)
+    ]
     return {
         "nodes": nodes,
         "submitted": any(bool(item.get("submitted")) for item in nodes),
         "spent": any(bool(item.get("spent")) for item in nodes),
+        "spent_node_ids": spent_ids,
+        "failed": False,
+        "failed_node_id": None,
+        "error": None,
+        "halted": halted,
     }
 
 
@@ -437,7 +449,12 @@ class GraphExecutor:
         model: Optional[str] = None,
         unit_cost: Optional[float] = None,
     ) -> dict:
-        """Regenerate the confirmed downstream set. A second call does not spend again."""
+        """Regenerate the confirmed downstream set. A second call does not spend again.
+
+        A budget pause stops the rest of the batch. A node that fails after
+        its quote is reserved releases that reservation, and the failure is
+        stored on the consumed token so a later confirm returns it.
+        """
         record = self._load_confirmation(
             project_id,
             confirm_token,
@@ -453,8 +470,7 @@ class GraphExecutor:
             raise _GateError("nothing to regenerate")
         if not ImpactConfirmation.claim(self.conn, record["token"]):
             raise _GateError("confirm_token was already consumed")
-        summary = self._execute_nodes(project_id, record["node_ids"], None)
-        ImpactConfirmation.store_result(self.conn, record["token"], summary)
+        summary = self._run_impact_batch(project_id, record["token"], record["node_ids"], None)
         return self._impact_body(look_id, model, unit_cost, record, summary)
 
     def regenerate_impact(
@@ -474,8 +490,7 @@ class GraphExecutor:
         ordered = self._checked_nodes(project_id, record["node_ids"], node_ids)
         if not ImpactConfirmation.claim(self.conn, record["token"]):
             raise _GateError("confirm_token was already consumed")
-        summary = self._execute_nodes(project_id, ordered, params)
-        ImpactConfirmation.store_result(self.conn, record["token"], summary)
+        summary = self._run_impact_batch(project_id, record["token"], ordered, params)
         return {
             "project_id": project_id,
             "look_id": record["look_id"],
@@ -485,6 +500,11 @@ class GraphExecutor:
             "nodes": summary["nodes"],
             "submitted": summary["submitted"],
             "spent": summary["spent"],
+            "spent_node_ids": list(summary.get("spent_node_ids") or []),
+            "failed": bool(summary.get("failed")),
+            "failed_node_id": summary.get("failed_node_id"),
+            "error": summary.get("error"),
+            "halted": bool(summary.get("halted")),
             "provider_called": False,
         }
 
@@ -551,14 +571,56 @@ class GraphExecutor:
             raise _GateError("cannot regenerate: " + "; ".join(problems))
         return [node_id for node_id in graph.topological_order() if node_id in seen]
 
+    def _run_impact_batch(
+        self,
+        project_id: str,
+        token: str,
+        node_ids: list[str],
+        params: Optional[dict],
+    ) -> dict:
+        """Run the batch, persist its summary, and keep a failure on the token."""
+        try:
+            summary = self._execute_nodes(project_id, node_ids, params)
+        except _ImpactFailure as exc:
+            ImpactConfirmation.store_result(self.conn, token, exc.summary)
+            failed = exc.summary.get("failed_node_id")
+            raise _GateError(
+                f"impact regenerate failed on node {failed}: {exc.summary.get('error')}"
+            ) from exc
+        ImpactConfirmation.store_result(self.conn, token, summary)
+        return summary
+
     def _execute_nodes(self, project_id: str, node_ids: list[str], params: Optional[dict]) -> dict:
+        """Run nodes in order. A pause or a video hold stops the rest of the batch."""
         graph = self._load(project_id)
         wanted = set(node_ids)
         ordered = [node_id for node_id in graph.topological_order() if node_id in wanted]
-        results = [
-            self._run_confirmed_node(project_id, node_id, params) for node_id in ordered
-        ]
-        return _execution_summary(results)
+        results: list[dict] = []
+        halted = False
+        for node_id in ordered:
+            try:
+                result = self._run_confirmed_node(project_id, node_id, params)
+            except Exception as exc:
+                self._release_quoted_reservation(project_id, node_id)
+                summary = _execution_summary(results)
+                summary["failed"] = True
+                summary["failed_node_id"] = node_id
+                summary["error"] = str(exc).strip() or exc.__class__.__name__
+                raise _ImpactFailure(summary) from exc
+            results.append(result)
+            if result.get("status") == AWAITING_USER:
+                halted = True
+                break
+        return _execution_summary(results, halted=halted)
+
+    def _release_quoted_reservation(self, project_id: str, node_id: str) -> None:
+        """Drop a quote that was reserved but never settled. Spent rows stay."""
+        for entry in LedgerStore.list(self.conn, project_id):
+            if entry["node_id"] != node_id or entry["status"] != QUOTED:
+                continue
+            if entry["actual_amount"] is not None:
+                continue
+            LedgerStore.update(self.conn, entry["id"], status=SKIPPED)
 
     def _run_confirmed_node(self, project_id: str, node_id: str, params: Optional[dict]) -> dict:
         result = self.run_node(project_id, node_id, params)
@@ -590,6 +652,11 @@ class GraphExecutor:
         body["submitted"] = bool(summary.get("submitted"))
         body["provider_called"] = False
         body["nodes"] = list(summary.get("nodes") or [])
+        body["spent_node_ids"] = list(summary.get("spent_node_ids") or [])
+        body["failed"] = bool(summary.get("failed"))
+        body["failed_node_id"] = summary.get("failed_node_id")
+        body["error"] = summary.get("error")
+        body["halted"] = bool(summary.get("halted"))
         return body
 
     def status(self, project_id: str) -> dict:
@@ -929,6 +996,14 @@ class GraphExecutor:
             graph.transition(node_id, NodeStatus.SKIPPED)
             return
         raise _GateError(f"cannot skip node {node_id}")
+
+
+class _ImpactFailure(Exception):
+    """One node in an impact batch failed after earlier nodes may have spent."""
+
+    def __init__(self, summary: dict) -> None:
+        self.summary = summary
+        super().__init__(summary.get("error") or "impact regenerate failed")
 
 
 class _GateError(StorageError):
