@@ -395,7 +395,7 @@ def test_confirm_regenerates_successors_and_writes_the_ledger_once(opened, price
     seen, runner = _calls()
     reopened = Database.connect(data)
     try:
-        done = GraphExecutor(reopened, runner).confirm_impact(
+        done = GraphExecutor(reopened, runner, allow_offline_video=True).confirm_impact(
             project["id"],
             look["id"],
             token,
@@ -463,7 +463,7 @@ def test_over_budget_confirm_pauses_and_does_not_skip_or_double_spend(opened, pr
     issued = _quote_impact(conn, project["id"], look["id"])
     token = issued["confirm_token"]
     seen, runner = _calls()
-    executor = GraphExecutor(conn, runner)
+    executor = GraphExecutor(conn, runner, allow_offline_video=True)
     paused = executor.confirm_impact(project["id"], look["id"], token, model=VIDEO)
     assert seen == []
     node = paused["nodes"][0]
@@ -638,9 +638,13 @@ def api(tmp_path, client):
         app.dependency_overrides.pop(get_library_connection, None)
 
 
-def test_v2_impact_confirm_route_regenerates_and_second_post_does_not_double_spend(api, priced):
+def test_v2_impact_confirm_route_regenerates_and_second_post_does_not_double_spend(api, priced, monkeypatch):
     client, data = api
     assert isinstance(client, TestClient)
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn, allow_offline_video=True),
+    )
     connection = Database.connect(data)
     try:
         project, look, _asset = _video_only(connection, cap=20)

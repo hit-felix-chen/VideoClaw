@@ -8,7 +8,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 不要带 `force_new`。查询参数或 JSON 里只要出现这个字段（包括 `false`）就是 400：`force_new is only valid on retry_video_submit`。JSON `{"force_new": null}` 目前是 422。省略该字段才确认。前端送的是 `{}`。
 
-没有密钥、也没有注入适配器时，这条和 `retry_video_submit`、视频节点的 `raise` 都是 409：`未配置视频厂商密钥，不会提交也不会入账`。账本不会多出视频行。进程内直接 `GraphExecutor.confirm` 没有这道 409，无适配器时仍按 `quote.max` 入账，而且不要求先有结果 URL。没有被这道 409 拦住时，这一步才 `authorize` 并写入账本。入账金额是 `quote.max`，没有结果 URL 也会记。
+没有密钥、也没有注入适配器时，这条和 `retry_video_submit`、视频节点的 `raise`、`impact/confirm`、`impact/regenerate` 都是 409：`未配置视频厂商密钥，不会提交也不会入账`。账本不会多出视频行，也不写 `submit_dispatched`。进程内同一个检查，默认也拒绝。`GraphExecutor(..., allow_offline_video=True)` 才按 `quote.max` 入账，而且不要求先有结果 URL。没有被这道 409 拦住时，这一步才 `authorize` 并写入账本。入账金额是 `quote.max`，没有结果 URL 也会记。
 
 用户拒绝、且还没有账本行：
 
@@ -26,13 +26,13 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 并发的第二个 confirm 会 400，不会再授权、也不会再提交。
 
-HTTP 的 `confirm`、`retry_video_submit` 和视频节点的 `raise` 在没有注入适配器且供应商密钥为空时，授权前就是 409：不入账，也不写 `submit_dispatched`。见上文。只有进程内的 `GraphExecutor.confirm` 会在这条路径上按 `quote.max` 入账；`impact/confirm` 和 `impact/regenerate` 直接调用这个方法，所以它们也不走 409，仍会入账且 `provider_called` 为 false。执行器只把 `ark`、`dashscope`、`kling` 的 `api_key` 当成已配置。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。
+`confirm`、`retry_video_submit`、视频节点的 `raise`、`impact/confirm` 和 `impact/regenerate` 在没有注入适配器且供应商密钥为空时，授权前就是 409：不入账，也不写 `submit_dispatched`。见上文。执行器只把 `ark`、`dashscope`、`kling` 的 `api_key` 当成已配置。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。图像节点不走这道 409。
 
 ## 标记
 
 提交前先把 `submit_dispatched` 写成 true 并落库。拿到任务 id 后写入 `vendor_task_id`。拿到结果 URL 后先落库 `result_obtained`，再在同一事务里记账并把节点标完成。
 
-HTTP 缺密钥是上面的 409：不写标记，也不入账。进程内无适配器的 `confirm` 也不写标记，但会花掉已保留的 `quote.max`。
+缺密钥且没有注入适配器是上面的 409：不写标记，也不入账。`allow_offline_video=True` 的进程内 `confirm` 不写标记，但会花掉已保留的 `quote.max`。认领比较失败（`_ClaimLost`）时释放这次报价；若节点仍是 `running` 且没有 `submit_dispatched` / `vendor_task_id`，写回 `awaiting_user`，不用等 30 分钟回收。这次回写如果比较并保存失败，会打 warning，节点会留在 `running`，直到 `recover_stale_submit_claims`（30 分钟）回收。
 
 标记只有在已经写成 true、并且随后的 `submit` 被 `_request_was_not_sent` 判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是 HTTP 409。这时报价改为 `skipped`，节点回到 `awaiting_user`。轮询失败、下载失败、供应商 failed 或 expired、所有 HTTP 4xx、超时，都保留标记。4xx 体里若有 `id`，会记成 `vendor_task_id`。之后普通 confirm 不会再 POST。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。
 

@@ -192,7 +192,7 @@ def test_video_quote_writes_nothing_until_confirm(conn, priced, monkeypatch):
     project = _project(conn, cap=20)
     _ready_shot(conn, project["id"])
     seen, runner = _calls()
-    executor = GraphExecutor(conn, runner)
+    executor = GraphExecutor(conn, runner, allow_offline_video=True)
     held = executor.run_node(
         project["id"],
         "shot",
@@ -230,7 +230,7 @@ def test_video_over_budget_pauses_then_raise_continues(conn, priced):
     project = _project(conn, cap=4)
     _ready_shot(conn, project["id"])
     seen, runner = _calls()
-    executor = GraphExecutor(conn, runner)
+    executor = GraphExecutor(conn, runner, allow_offline_video=True)
     held = executor.run_node(project["id"], "shot", {"model_id": VIDEO, "duration": 30})
     assert held["gate"] == "confirm"
     assert held["over_budget"] is True
@@ -278,7 +278,7 @@ def test_decline_skips_without_running(conn, priced):
     project_b = _project(conn, cap=4)
     _ready_shot(conn, project_b["id"])
     seen_b, runner_b = _calls()
-    other = GraphExecutor(conn, runner_b)
+    other = GraphExecutor(conn, runner_b, allow_offline_video=True)
     other.run_node(project_b["id"], "shot", {"model_id": VIDEO})
     paused = other.confirm(project_b["id"], "shot")
     declined = other.decline_budget(project_b["id"], paused["entry_id"])
@@ -295,7 +295,7 @@ def test_regenerate_stales_successors_and_does_not_rerun_them(conn, priced):
     project = _project(conn, cap=20)
     _chain(conn, project["id"])
     seen, runner = _calls()
-    executor = GraphExecutor(conn, runner)
+    executor = GraphExecutor(conn, runner, allow_offline_video=True)
     held = executor.regenerate(project["id"], "shot", {"model_id": VIDEO, "duration": 99})
     assert held["regenerated"] == "shot"
     assert held["status"] == "awaiting_user"
@@ -446,7 +446,7 @@ def test_look_impact_uses_price_book_and_confirm_does_not_spend_or_rerun(conn, p
     LookStore.update(conn, look["id"], prompt="night")
 
     seen, runner = _calls()
-    executor = GraphExecutor(conn, runner)
+    executor = GraphExecutor(conn, runner, allow_offline_video=True)
     unknown = executor.impact(project["id"], look["id"], model="not-a-real-model")
     assert unknown["estimated_cost"] is None
     assert unknown["cost_known"] is False

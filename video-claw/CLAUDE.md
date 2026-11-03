@@ -1,6 +1,6 @@
 ﻿# CLAUDE.md
 
-Guidance for working in this skill directory. Claims below were checked against the backend on commit `14d5aaf`. There is no orchestrator and no `/api/project` router.
+Guidance for working in this skill directory. Claims below were checked against the backend on commit `faf5988`, then updated for the shared no-key video guard on this branch. There is no orchestrator and no `/api/project` router.
 
 ## Project Overview
 
@@ -124,7 +124,7 @@ Order for a video node:
 1. `run_node` prices the call and stores `pending_call` on the node. Status becomes `awaiting_user`, `gate` is `confirm`. No ledger row yet. `over_budget` is a preview against the project cap.
 2. `confirm` claims the node (`awaiting_user` → `running`, `BEGIN IMMEDIATE`) and calls `ProjectBudget.authorize`. That is the first ledger write for the call.
 3. Authorize either reserves (`ledger.status = quoted`, `allowed` true) or pauses (`awaiting_user`) when `used + committed + quote.max` would pass `budget_cap`. A null cap never pauses.
-4. A reserved quote is spent with `ProjectBudget.record_actual` at `quote.max` in the same transaction as `done`. A URL is not required. When `provider_called` is true and the result is a URL or path, that URL is committed as `result_obtained` first; the spend still uses `quote.max` if there is no URL. The HTTP routes `confirm`, `retry_video_submit`, and `raise` return 409 (`未配置视频厂商密钥，不会提交也不会入账`) before `confirm` when no adapter is injected and the provider key is empty, so they do not write a ledger row. In-process `GraphExecutor.confirm` with no adapter still spends `quote.max`.
+4. A reserved quote is spent with `ProjectBudget.record_actual` at `quote.max` in the same transaction as `done`. A URL is not required. When `provider_called` is true and the result is a URL or path, that URL is committed as `result_obtained` first; the spend still uses `quote.max` if there is no URL. Before authorize, `GraphExecutor._require_video_vendor` refuses a video node when no adapter is injected and the provider key is empty. That raises `_NoVendorKey` (`未配置视频厂商密钥，不会提交也不会入账`). HTTP `confirm`, `retry_video_submit`, `raise`, `impact/confirm`, and `impact/regenerate` map it to 409. Nothing is written to the ledger and `submit_dispatched` is not set. Image, VLM, TTS, script, and storyboard nodes are not refused. `GraphExecutor(..., allow_offline_video=True)` is the explicit in-process opt-in that still books a video at `quote.max` with `provider_called` false. The default is false.
 
 Image kinds (`character`, `scene`, `setting`, `keyframe`, `image`), VLM, and TTS skip step 1's wait: `run_node` calls `authorize` immediately and, when allowed, spends `quote.max` even if `provider_called` is false. Over budget returns `gate: "budget"` and does not run the node. Raising the cap (`raise_budget`) continues the same quote. Declining (`decline_budget`, or `decline` on the node) sets the ledger row to `skipped` and skips the node.
 
@@ -141,7 +141,7 @@ Seedance 2.5 does have documented CNY prices (`per_million_tokens`, see Model re
 `storage/confirmations.py`. A look-impact token is one row in `impact_confirmation`: one project, the exact downstream node id list, TTL `IMPACT_TOKEN_TTL_SECONDS` (30 minutes), single-use `claim`.
 
 - `POST .../looks/{look_id}/impact` builds a `RegenerationQuote` (does not spend) and replaces that quote's hash token with `ImpactConfirmation.issue`.
-- `POST .../impact/confirm` claims the token and runs the stored node set through `run_node`. A video node then `confirm`s inside that batch. The first node that is still awaiting the user stops the rest, so a later node is not reserved in that call. A runner failure releases that node's unsettled quote and stores the failure on the consumed token.
+- `POST .../impact/confirm` checks every stored node with `_require_video_vendor` before `ImpactConfirmation.claim`. A video node with no adapter and no provider key is 409 and the token stays unused. Otherwise it claims the token and runs the set through `run_node`. A video node then `confirm`s inside that batch. The first node that is still awaiting the user stops the rest, so a later node is not reserved in that call. A runner failure releases that node's unsettled quote and stores the failure on the consumed token.
 - `POST .../impact/regenerate` reruns a subset. Unknown nodes, nodes outside the set, and a missing, expired, stale, or already-consumed token fail before any node runs and before any ledger write.
 
 The library routes `POST /api/library/looks/{look_id}/regenerate-quote` and `regenerate-confirm` are a different token: a sha256 of the quote payload. Confirming that token records acceptance and still does not generate or spend.
@@ -210,7 +210,7 @@ Constants: `VIDEO_SUBMIT_CLAIM_TTL_SECONDS = 30 * 60`, `video_seedance.SUBMIT_DE
 
 Before `adapter.submit`, the same claim writes node metadata `submit_dispatched: true` and commits it. `on_task` then stores `vendor_task_id` (and keeps the marker). A result URL is written to `result_obtained` and committed before the spent-and-done transaction.
 
-On the HTTP routes, a missing provider key and no injected adapter is a 409 before authorize: no POST, no `submit_dispatched`, no ledger row. In-process `GraphExecutor.confirm` still returns from `_video_submitter` before the marker write, does not POST, and `_finish` spends `quote.max` with `provider_called` false.
+A missing provider key and no injected adapter is `_NoVendorKey` before authorize, for in-process calls and for HTTP: no POST, no `submit_dispatched`, no ledger row. `_ClaimLost` skips the quote this attempt authorized. If the node is still `running` and has no `submit_dispatched` or `vendor_task_id`, it is written back to `awaiting_user` with `submit_error` `状态已变化，请刷新` instead of waiting out the 30-minute claim TTL. That write is a compare-and-save. If it loses, `_persist_owned_node` logs a warning and returns; the node can stay `running` until `recover_stale_submit_claims` after `VIDEO_SUBMIT_CLAIM_TTL_SECONDS` (30 minutes). `allow_offline_video=True` skips the no-key refusal and still spends `quote.max` with `provider_called` false.
 
 The marker is cleared only after it was written and `submit` then raises something `_request_was_not_sent` accepts: `FileNotFoundError`, `UnsupportedParam`, `SubmitNotSent`, or an error string containing `reference image file is missing`, `model is not registered`, or `ARK_API_KEY not set`. `ARK_API_KEY not set` is an adapter that already entered `submit`, not the HTTP 409. On this path the quote is skipped, the node returns to `awaiting_user`, and a plain `confirm` does not POST again. Poll and download errors, vendor `failed` or `expired`, every HTTP 4xx, timeouts, and any other exception keep both `submit_dispatched` and `vendor_task_id`. A 4xx body that contains an id is stored as `vendor_task_id` before the error is raised. `stop` refuses a node once `submit_dispatched` is stored and does not cancel the vendor call.
 
@@ -220,7 +220,7 @@ After 30 minutes, `recover_stale_submit_claims` and the next `confirm` do not su
 
 `raise_budget` refuses while `submit_dispatched` or `vendor_task_id` is set, unless this pause is the budget exit of `force_new`.
 
-HTTP `confirm`, `retry_video_submit`, and a video `raise` return 409 before authorize when no adapter is injected and the provider key is empty. They do not write a ledger row and do not set `submit_dispatched`. Only an in-process `GraphExecutor.confirm` spends `quote.max` on that path. `POST .../impact/confirm` and `POST .../impact/regenerate` call that method and do not pass the HTTP 409 check, so they still spend `quote.max` with `provider_called` false. The stored request keeps asset ids, not files, and does not call the vendor.
+HTTP `confirm`, `retry_video_submit`, a video `raise`, `impact/confirm`, and `impact/regenerate` return 409 before authorize when no adapter is injected and the provider key is empty. The same check runs inside `GraphExecutor` before `_run_confirmed_node`, so an in-process call raises `_NoVendorKey` too unless `allow_offline_video=True`. They do not write a ledger row and do not set `submit_dispatched`. Image nodes still spend `quote.max` with `provider_called` false. The stored request keeps asset ids, not files, and does not call the vendor.
 
 `adapter.submit` for Ark submits, polls, downloads to `save_path` (`code/result/video/<project_id>/<node_id>.mp4`), and returns the remote URL. `result_id` is that URL. A bare task id is not a finished result. The Seedance client stops the whole submit at 20 minutes so the poll cannot outlive the 30-minute claim (the raw poll cap is about 74 minutes: 120 rounds, 30-second HTTP timeout, 5-second pause).
 

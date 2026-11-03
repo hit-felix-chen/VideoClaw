@@ -143,7 +143,7 @@ def test_one_episode_quotes_video_and_resolves_references_without_globbing(conn,
     graph.add_edge("video", "tts")
     GraphStore.save(conn, project_id, graph.to_dict())
 
-    executor = GraphExecutor(conn)
+    executor = GraphExecutor(conn, allow_offline_video=True)
     assert executor._runner is dispatch_node or executor._runner.__name__ == "_default_runner"
 
     script = executor.run_node(project_id, "script")

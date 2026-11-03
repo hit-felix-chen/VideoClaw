@@ -99,6 +99,7 @@ ledger row. Image, VLM, and TTS still reserve immediately.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, NoReturn, Optional
 
 from graph.dependency_graph import DependencyGraph
@@ -112,6 +113,8 @@ from storage.database import StorageError, dump_json, require_id, transaction, u
 from storage.ledger import AWAITING_USER, QUOTED, SKIPPED, LedgerStore
 from storage.projects import GraphStore, ProjectStore
 from storage.staleness import RegenerationQuote
+
+logger = logging.getLogger(__name__)
 
 _VIDEO = frozenset({"shot_segment", "draft_video", "final_video", "segment", "video"})
 _IMAGE = frozenset({"character", "scene", "setting", "keyframe", "image"})
@@ -499,6 +502,16 @@ class _SaveRejected(Exception):
     """This node's compare-and-set lost. The savepoint rolls back."""
 
 
+NO_VENDOR_MESSAGE = "未配置视频厂商密钥，不会提交也不会入账"
+
+
+class _NoVendorKey(Exception):
+    """A video node would be authorized with no adapter and no provider key."""
+
+    def __init__(self) -> None:
+        super().__init__(NO_VENDOR_MESSAGE)
+
+
 class _ClaimLost(Exception):
     """The submit stamp no longer matches. Do not write the node."""
 
@@ -526,10 +539,13 @@ class GraphExecutor:
         conn,
         runner: Optional[Callable[[dict], Any]] = None,
         video_adapter: Any = None,
+        *,
+        allow_offline_video: bool = False,
     ) -> None:
         self.conn = conn
         self._runner = runner or _default_runner
         self._video_adapter = video_adapter
+        self._allow_offline_video = bool(allow_offline_video)
         self.submissions: list[str] = []
         self._claim_stamps: dict[str, str] = {}
         self._baselines: dict[int, dict[str, str]] = {}
@@ -667,6 +683,7 @@ class GraphExecutor:
         """
         if force_new and not retry:
             raise _GateError("force_new is only valid on retry_video_submit")
+        self._require_video_vendor(project_id, node_id)
         graph = self._load(project_id)
         node_id = self._node_id(graph, node_id)
         node = graph.node(node_id)
@@ -706,6 +723,11 @@ class GraphExecutor:
                         call_confirmed=True,
                     )
                 except _ClaimLost:
+                    self._unwind_lost_claim(
+                        project_id,
+                        node_id,
+                        quoted.get("id") if isinstance(quoted, dict) else None,
+                    )
                     raise
                 except Exception:
                     self._abandon_submit_claim(project_id, node_id)
@@ -757,10 +779,11 @@ class GraphExecutor:
                     )
                 except _ClaimLost:
                     # This attempt authorized the row. A lost claim must not
-                    # leave it quoted after stop (or another writer) won.
-                    self._skip_entry(view.get("entry_id"))
+                    # leave it quoted, or leave the node running for the TTL.
+                    self._unwind_lost_claim(project_id, node_id, view.get("entry_id"))
                     raise
             except _ClaimLost:
+                self._unwind_lost_claim(project_id, node_id, None)
                 raise
             except Exception:
                 self._abandon_submit_claim(project_id, node_id)
@@ -1222,6 +1245,8 @@ class GraphExecutor:
     def raise_budget(self, project_id: str, entry_id: str, new_cap: float) -> dict:
         entry = LedgerStore.get(self.conn, entry_id)
         node_id = entry.get("node_id")
+        if isinstance(node_id, str) and node_id.strip():
+            self._require_video_vendor(project_id, node_id.strip())
         graph = self._load(project_id)
         node = graph.node(node_id) if node_id and node_id in graph else None
         # A force_new pause still holds the previous task until the new quote
@@ -1386,6 +1411,7 @@ class GraphExecutor:
             return self._impact_body(look_id, model, unit_cost, record, summary)
         if not record["node_ids"]:
             raise _GateError("nothing to regenerate")
+        self._require_video_vendors(project_id, record["node_ids"])
         if not ImpactConfirmation.claim(self.conn, record["token"]):
             raise _GateError("confirm_token was already consumed")
         summary = self._run_impact_batch(project_id, record["token"], record["node_ids"], None)
@@ -1406,6 +1432,7 @@ class GraphExecutor:
         """
         record = self._load_confirmation(project_id, confirm_token, allow_consumed=False)
         ordered = self._checked_nodes(project_id, record["node_ids"], node_ids)
+        self._require_video_vendors(project_id, ordered, params)
         if not ImpactConfirmation.claim(self.conn, record["token"]):
             raise _GateError("confirm_token was already consumed")
         summary = self._run_impact_batch(project_id, record["token"], ordered, params)
@@ -1513,6 +1540,7 @@ class GraphExecutor:
         graph = self._load(project_id)
         wanted = set(node_ids)
         ordered = [node_id for node_id in graph.topological_order() if node_id in wanted]
+        self._require_video_vendors(project_id, ordered, params)
         results: list[dict] = []
         halted = False
         for node_id in ordered:
@@ -1554,10 +1582,77 @@ class GraphExecutor:
             LedgerStore.update(self.conn, entry_id, status=SKIPPED)
 
     def _run_confirmed_node(self, project_id: str, node_id: str, params: Optional[dict]) -> dict:
+        self._require_video_vendor(project_id, node_id, params)
         result = self.run_node(project_id, node_id, params)
         if result.get("gate") == "confirm":
             result = self.confirm(project_id, node_id)
         return result
+
+    def _require_video_vendors(
+        self,
+        project_id: str,
+        node_ids: list[str],
+        params: Optional[dict] = None,
+    ) -> None:
+        """Refuse the batch before any node is authorized."""
+        for node_id in node_ids:
+            self._require_video_vendor(project_id, node_id, params)
+
+    def _require_video_vendor(
+        self,
+        project_id: str,
+        node_id: str,
+        params: Optional[dict] = None,
+    ) -> None:
+        """Block a video authorize when this process cannot call a vendor.
+
+        Image, VLM, TTS, script, and storyboard nodes are unchanged.
+        ``allow_offline_video=True`` is the explicit in-process opt-in that
+        still books ``quote.max`` with ``provider_called`` false.
+        """
+        if self._allow_offline_video:
+            return
+        params = params or {}
+        try:
+            graph = self._load(project_id)
+        except _GateError:
+            return
+        if node_id not in graph:
+            return
+        node = graph.node(node_id)
+        meta = node.metadata if isinstance(node.metadata, dict) else {}
+        pending = meta.get("pending_call") if isinstance(meta.get("pending_call"), dict) else {}
+        modality = params.get("modality") or pending.get("modality") or ""
+        if not isinstance(modality, str):
+            modality = ""
+        if modality.strip().lower() != "video" and node.kind not in _VIDEO:
+            return
+        model_id = params.get("model_id") or pending.get("model_id") or meta.get("model_id") or ""
+        if not isinstance(model_id, str):
+            model_id = ""
+        model_id = model_id.strip() or DEFAULT_REFERENCE_VIDEO_MODEL
+        adapter, _spec = self._video_submitter(model_id)
+        if adapter is None:
+            raise _NoVendorKey()
+
+    def _unwind_lost_claim(self, project_id: str, node_id: str, entry_id: Optional[str]) -> None:
+        """Release this attempt's quote and unstick a node nobody else changed."""
+        self._skip_entry(entry_id)
+        try:
+            graph = self._load(project_id)
+        except _GateError:
+            return
+        if node_id not in graph:
+            return
+        node = graph.node(node_id)
+        if node.status != NodeStatus.RUNNING:
+            return
+        if _dispatched(node) or _vendor_task_id(node):
+            return
+        graph.transition(node_id, NodeStatus.AWAITING_USER)
+        graph.update_metadata(node_id, submit_error="状态已变化，请刷新")
+        self._save(project_id, graph, owned={node_id}, resume_pause=True)
+        self._release_quoted_reservation(project_id, node_id)
 
     def _impact_body(
         self,
@@ -2429,6 +2524,14 @@ class GraphExecutor:
                     resume_pause=resume_pause,
                 )
         except _SaveRejected:
+            logger.warning(
+                "compare-and-save rejected for project %s node %s; "
+                "the in-memory write was not stored. A lost video claim "
+                "can stay running until recover_stale_submit_claims "
+                "(VIDEO_SUBMIT_CLAIM_TTL_SECONDS, 30 minutes).",
+                project_id,
+                node_id,
+            )
             return
 
     def _write_owned_node(

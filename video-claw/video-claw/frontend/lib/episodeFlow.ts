@@ -150,6 +150,44 @@ export function reservationCopy(
   return ceiling;
 }
 
+export type ModelDrafts = {
+  llm_model: string;
+  image_model: string;
+  video_model: string;
+  tts_model: string;
+};
+
+const MODEL_DRAFT_KEYS = ['llm_model', 'image_model', 'video_model', 'tts_model'] as const;
+
+/** Keep a model field the user edited. A field that still matches the last server snapshot takes the new one. */
+export function mergeModelDrafts(
+  current: ModelDrafts,
+  baseline: ModelDrafts,
+  incoming: ModelDrafts,
+): { drafts: ModelDrafts; baseline: ModelDrafts } {
+  const drafts = { ...current };
+  const nextBaseline = { ...baseline };
+  for (const key of MODEL_DRAFT_KEYS) {
+    if (current[key] === baseline[key]) {
+      drafts[key] = incoming[key];
+      nextBaseline[key] = incoming[key];
+    }
+  }
+  return { drafts, baseline: nextBaseline };
+}
+
+/** Reload even when confirm fails, so the server status (retry or confirm) is visible. */
+export async function confirmThenReload<T>(
+  confirm: () => Promise<T>,
+  reload: () => Promise<unknown>,
+): Promise<T> {
+  try {
+    return await confirm();
+  } finally {
+    await reload();
+  }
+}
+
 export function canConfirmVideo(node: NodeView): boolean {
   if (!isVideoNode(node)) return false;
   if (needsVideoRetry(node)) return false;
