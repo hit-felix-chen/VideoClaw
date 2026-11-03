@@ -48,7 +48,7 @@ class SeedanceVideoClient:
     def generate_video(
         self,
         prompt: str,
-        image_path: str,
+        image_path: Optional[str],
         save_path: str,
         model: str = "doubao-seedance-2-0-260128",
         duration: int = 5,
@@ -78,35 +78,59 @@ class SeedanceVideoClient:
         
         return video_url
 
-    def _submit_task(self, prompt: str, image_path: str, model: str, duration: int, **kwargs) -> str:
-        # 根据 Seedance 2.0 文档更新接口路径
-        url = f"{self.base_url}/contents/generations/tasks"
-        
+    @staticmethod
+    def image_url(image_path: str) -> str:
+        if not image_path:
+            raise FileNotFoundError("输入图片不存在: empty path")
+        if image_path.startswith(("data:", "http://", "https://", "asset://")):
+            return image_path
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"输入图片不存在: {image_path}")
-            
-        with open(image_path, "rb") as f:
-            img_data = base64.b64encode(f.read()).decode("utf-8")
-        ext = os.path.splitext(image_path)[1].lower()
-        mime = "image/png" if ext == ".png" else "image/jpeg"
-        image_base64 = f"data:{mime};base64,{img_data}"
+        with open(image_path, "rb") as handle:
+            encoded = base64.b64encode(handle.read()).decode("utf-8")
+        ext = os.path.splitext(image_path)[1].lower().lstrip(".")
+        mime = "image/png" if ext == "png" else "image/jpeg"
+        return f"data:{mime};base64,{encoded}"
 
-        # 构建 content 数组
+    @staticmethod
+    def image_content(image_path: str, role: str) -> dict:
+        return {
+            "type": "image_url",
+            "image_url": {"url": SeedanceVideoClient.image_url(image_path)},
+            "role": role,
+        }
+
+    @staticmethod
+    def build_content(
+        prompt: str,
+        image_path: Optional[str] = None,
+        reference_image_paths: Optional[list] = None,
+        last_image_path: Optional[str] = None,
+    ) -> list:
+        """Ark content list. Reference images and first/last frame are mutually exclusive."""
         content = []
         if prompt:
-            content.append({
-                "type": "text",
-                "text": prompt
-            })
-        
-        # 图生视频-首帧
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": image_base64
-            },
-            "role": "first_frame"
-        })
+            content.append({"type": "text", "text": prompt})
+        references = [path for path in (reference_image_paths or []) if path]
+        if references:
+            for path in references:
+                content.append(SeedanceVideoClient.image_content(path, "reference_image"))
+            return content
+        if image_path:
+            content.append(SeedanceVideoClient.image_content(image_path, "first_frame"))
+        if last_image_path:
+            content.append(SeedanceVideoClient.image_content(last_image_path, "last_frame"))
+        return content
+
+    def _submit_task(self, prompt: str, image_path: Optional[str], model: str, duration: int, **kwargs) -> str:
+        # 根据 Seedance 2.0 文档更新接口路径
+        url = f"{self.base_url}/contents/generations/tasks"
+        content = self.build_content(
+            prompt,
+            image_path=image_path,
+            reference_image_paths=kwargs.get("reference_image_paths"),
+            last_image_path=kwargs.get("last_image_path"),
+        )
 
         payload = {
             "model": model,
@@ -140,6 +164,13 @@ class SeedanceVideoClient:
             raise RuntimeError(f"Seedance API 未返回任务 ID: {data}")
             
         return task_id
+
+    def poll_task(self, task_id: str) -> str:
+        return self._poll_until_done(task_id)
+
+    def download(self, url: str, save_path: str) -> str:
+        self._download_video(url, save_path)
+        return save_path
 
     def _poll_until_done(self, task_id: str, max_polls: int = 120, interval: int = 5) -> str:
         # 同步更新查询接口路径

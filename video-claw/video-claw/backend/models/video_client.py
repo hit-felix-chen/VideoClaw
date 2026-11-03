@@ -130,9 +130,6 @@ class VideoClient:
         if not model:
             model = "wan2.7-i2v"
 
-        # 确保 duration 是整数,视频模型通常要求整数秒
-        duration = int(duration)
-
         if Config.PRINT_MODEL_INPUT:
             lines = [
                 "---- VIDEO GENERATION REQUEST ----",
@@ -169,6 +166,42 @@ class VideoClient:
             ])
             logger.info("\n%s", "\n".join(lines))
 
+        from models.middle.adapter import ProviderDispatch
+
+        dispatched = ProviderDispatch.run(
+            self,
+            "video",
+            model,
+            {
+                "prompt": prompt,
+                "image_path": image_path,
+                "save_path": save_path,
+                "duration": duration,
+                "shot_type": shot_type,
+                "sound": sound,
+                "video_ratio": video_ratio,
+                "resolution": resolution,
+                "last_image_path": last_image_path,
+                "first_clip_path": first_clip_path,
+                "reference_image_path": reference_image_path,
+                "reference_image_paths": reference_image_paths,
+                "reference_video_paths": reference_video_paths,
+                "reference_audio_path": reference_audio_path,
+                "audio_path": audio_path,
+                "negative_prompt": negative_prompt,
+                "prompt_extend": prompt_extend,
+                "watermark": watermark,
+                "seed": seed,
+                "mode": mode,
+                "cfg_scale": cfg_scale,
+                "generate_audio": generate_audio,
+                "audio": audio,
+            },
+        )
+        if dispatched is not None:
+            return dispatched
+
+        duration = int(duration)
         model_lower = model.lower()
 
         if "kling" in model_lower:
@@ -223,11 +256,6 @@ class VideoClient:
             )
         else:
             raise ValueError(f"未知的视频生成模型: {model}")
-
-    @staticmethod
-    def _normalize_seedance_resolution(resolution: Optional[str]) -> str:
-        value = (resolution or "720p").strip().lower()
-        return value if value in {"720p", "1080p"} else "720p"
 
     def _generate_wan(
         self,
@@ -322,8 +350,10 @@ class VideoClient:
         seed: Optional[int] = None,
         watermark: Optional[bool] = None,
         generate_audio: Optional[bool] = None,
+        reference_image_paths: Optional[list[str]] = None,
+        last_image_path: Optional[str] = None,
     ) -> str:
-        """通过 Seedance 模型生成视频"""
+        """通过 Seedance 模型生成视频。分辨率已由适配器归一化，不再静默降到 720p。"""
         logger.info("VideoClient routed to Seedance: model=%s", model)
         return self.seedance_client.generate_video(
             prompt=prompt,
@@ -332,10 +362,12 @@ class VideoClient:
             model=model,
             duration=duration,
             ratio=video_ratio,
-            resolution=self._normalize_seedance_resolution(resolution),
+            resolution=resolution or "720p",
             seed=seed,
             watermark=watermark,
             generate_audio=generate_audio,
+            reference_image_paths=reference_image_paths,
+            last_image_path=last_image_path,
         )
 
 

@@ -55,7 +55,16 @@ export interface ApiModelOption {
   provider: string;
   family?: string;
   media_type?: 'image' | 'video';
-  model_type?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
+  model_type?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video' | 'tts';
+  currency?: string | null;
+  pricing?: Array<{
+    amount: number;
+    currency: string | null;
+    unit: string;
+    verified: boolean;
+    resolution?: string | null;
+    includes_video_input?: boolean | null;
+  }>;
   type?: string[];
   ability_type?: string;
   ability_types?: string[];
@@ -96,7 +105,7 @@ export async function clearTempCache(): Promise<{ status: string; deleted: numbe
 
 export async function fetchApiModels(params: {
   mediaType?: 'image' | 'video';
-  modelType?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
+  modelType?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video' | 'tts';
   ability?: string;
   verifiedOnly?: boolean;
 } = {}): Promise<ApiModelOption[]> {

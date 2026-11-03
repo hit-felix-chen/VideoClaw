@@ -40,7 +40,7 @@ models:
   video: wan2.7-i2v
   video_first_frame: wan2.7-i2v
   video_start_end: wan2.7-i2v
-  video_reference: wan2.7-r2v
+  video_reference: doubao-seedance-2-5-260628
 generation:
   style: realistic
   video_ratio: '16:9'
