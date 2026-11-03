@@ -42,3 +42,7 @@ jobs:
       - name: Typecheck
         working-directory: video-claw/video-claw/frontend
         run: npx tsc --noEmit
+
+      - name: Frontend tests
+        working-directory: video-claw/video-claw/frontend
+        run: npm test

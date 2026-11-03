@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Settings, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Settings, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useEffect, useState, type CSSProperties } from 'react';
-import { clearTempCache, fetchSandboxTasks, fetchSessions, type SandboxTask } from '@/lib/workflowApi';
+import { clearTempCache, fetchSandboxTasks, type SandboxTask } from '@/lib/workflowApi';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Video-Claw', icon: Home },
@@ -40,42 +40,7 @@ type RunningTaskItem = {
   progress: number;
 };
 
-const WORKFLOW_STAGE_COUNT = 7;
-const COMPLETED_TASK_DISMISS_KEY = 'video-claw.dismissed-completed-tasks';
 const SIDEBAR_OPEN_KEY = 'video-claw.sidebar-open';
-
-function projectTaskFromSession(session: any): RunningTaskItem | null {
-  const statusMap = session.status || {};
-  const values = Object.values(statusMap);
-  if (!values.includes('running')) return null;
-  const completed = values.filter(value => ['completed', 'session_completed'].includes(String(value))).length;
-  const runningStage = Object.keys(statusMap).find(key => statusMap[key] === 'running');
-  return {
-    id: `project-${session.id}`,
-    href: `/?session=${encodeURIComponent(session.id)}`,
-    title: session.idea || session.id,
-    scope: runningStage ? `主流程 · ${runningStage}` : '主流程',
-    status: 'running',
-    progress: Math.round((completed / WORKFLOW_STAGE_COUNT) * 100),
-  };
-}
-
-function projectReviewTaskFromSession(session: any): RunningTaskItem | null {
-  const statusMap = session.status || {};
-  const waitingStage = Object.keys(statusMap).find(key => statusMap[key] === 'waiting');
-  const completed = Object.values(statusMap).filter(value => ['completed', 'session_completed'].includes(String(value))).length;
-  const allDone = completed >= WORKFLOW_STAGE_COUNT || statusMap.completed === 'completed';
-  if (!waitingStage && !allDone) return null;
-  const targetStage = waitingStage || Object.keys(statusMap).reverse().find(key => ['completed', 'session_completed'].includes(String(statusMap[key]))) || '';
-  return {
-    id: `project-review-${session.id}-${waitingStage || 'completed'}`,
-    href: `/?session=${encodeURIComponent(session.id)}${targetStage ? `&stage=${encodeURIComponent(targetStage)}` : ''}`,
-    title: session.idea || session.title || session.id,
-    scope: waitingStage ? `主流程 · ${waitingStage}` : '主流程',
-    status: waitingStage ? 'waiting' : 'completed',
-    progress: waitingStage ? Math.round((completed / WORKFLOW_STAGE_COUNT) * 100) : 100,
-  };
-}
 
 const SANDBOX_TOOL_LABELS: Record<string, string> = {
   llm: 'LLM',
@@ -95,22 +60,6 @@ function sandboxTaskItem(task: SandboxTask): RunningTaskItem {
     status: task.status || 'running',
     progress: task.progress || 1,
   };
-}
-
-function loadDismissedCompletedTasks(): Set<string> {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    const raw = window.localStorage.getItem(COMPLETED_TASK_DISMISS_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveDismissedCompletedTasks(ids: Set<string>) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(COMPLETED_TASK_DISMISS_KEY, JSON.stringify(Array.from(ids)));
 }
 
 function loadSidebarOpen(): boolean {
@@ -193,27 +142,13 @@ function TaskPanel({
 function SidebarTaskPanels({ currentPath }: { currentPath: string }) {
   const router = useRouter();
   const [runningTasks, setRunningTasks] = useState<RunningTaskItem[]>([]);
-  const [completedTasks, setCompletedTasks] = useState<RunningTaskItem[]>([]);
-  const [dismissedCompleted, setDismissedCompleted] = useState<Set<string>>(() => loadDismissedCompletedTasks());
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [sessions, sandboxRecords] = await Promise.all([
-        fetchSessions().catch(() => []),
-        fetchSandboxTasks().catch(() => []),
-      ]);
-      setRunningTasks([
-        ...sandboxRecords.map(sandboxTaskItem),
-        ...sessions.map(projectTaskFromSession).filter((task): task is RunningTaskItem => Boolean(task)),
-      ]);
-      setCompletedTasks(
-        sessions
-          .map(projectReviewTaskFromSession)
-          .filter((task): task is RunningTaskItem => Boolean(task))
-          .filter(task => !dismissedCompleted.has(task.id)),
-      );
+      const sandboxRecords = await fetchSandboxTasks().catch(() => []);
+      setRunningTasks(sandboxRecords.map(sandboxTaskItem));
     } finally {
       setLoading(false);
     }
@@ -223,41 +158,18 @@ function SidebarTaskPanels({ currentPath }: { currentPath: string }) {
     load().catch(() => {});
     const timer = window.setInterval(() => load().catch(() => {}), 3000);
     return () => window.clearInterval(timer);
-  }, [dismissedCompleted]);
-
-  const handleRunningClick = (task: RunningTaskItem) => {
-    router.push(task.href);
-  };
-
-  const handleCompletedClick = (task: RunningTaskItem) => {
-    const next = new Set(dismissedCompleted);
-    next.add(task.id);
-    saveDismissedCompletedTasks(next);
-    setDismissedCompleted(next);
-    setCompletedTasks(current => current.filter(item => item.id !== task.id));
-    router.push(task.href);
-  };
+  }, []);
 
   return (
-    <>
-      <TaskPanel
-        title="进行中任务"
-        icon={<Clock className="h-3.5 w-3.5 text-gray-400" />}
-        loading={loading}
-        tasks={runningTasks}
-        currentPath={currentPath}
-        emptyText="暂无进行中任务"
-        onTaskClick={handleRunningClick}
-      />
-      <TaskPanel
-        title="已完成/等待确认"
-        icon={<CheckCircle2 className="h-3.5 w-3.5 text-gray-400" />}
-        tasks={completedTasks}
-        currentPath={currentPath}
-        emptyText="暂无已完成或待确认任务"
-        onTaskClick={handleCompletedClick}
-      />
-    </>
+    <TaskPanel
+      title="临时工作台"
+      icon={<Clock className="h-3.5 w-3.5 text-gray-400" />}
+      loading={loading}
+      tasks={runningTasks}
+      currentPath={currentPath}
+      emptyText="暂无进行中的临时任务"
+      onTaskClick={task => router.push(task.href)}
+    />
   );
 }
 
