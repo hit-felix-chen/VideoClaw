@@ -6,8 +6,11 @@ return a regenerate quote. Nothing here calls a model or spends money.
 
 from __future__ import annotations
 
+import contextvars
+import inspect
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from functools import wraps
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -44,16 +47,59 @@ from storage import (
     StoreConnection,
 )
 
-router = APIRouter(tags=["Library"])
+# Published by the request dependency on the event-loop context, then copied
+# into the worker that runs the endpoint. The sqlite handle itself is opened
+# and closed inside that worker.
+library_data_dir: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "library_data_dir",
+    default=None,
+)
 
 
-def get_library_connection() -> Iterator[StoreConnection]:
-    """One SQLite connection per request. Tests override this dependency."""
-    conn = Database.connect()
+async def get_library_connection():
+    """Let tests point this request at a data directory. Does not open SQLite."""
+    yield None
+
+
+@contextmanager
+def open_request_connection():
+    """Open and close ``videoclaw.db`` on the calling thread."""
+    conn = Database.connect(library_data_dir.get())
     try:
         yield conn
     finally:
         conn.close()
+
+
+def bind_db(fn):
+    """Run ``fn`` with a connection created and closed on the endpoint thread."""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        with open_request_connection() as conn:
+            return fn(*args, conn=conn, **kwargs)
+
+    signature = inspect.signature(fn)
+    wrapper.__signature__ = signature.replace(
+        parameters=[param for param in signature.parameters.values() if param.name != "conn"]
+    )
+    return wrapper
+
+
+def use_data_dir(data_dir):
+    """Async dependency override. Sets the directory seen by ``open_request_connection``."""
+
+    async def override():
+        token = library_data_dir.set(str(data_dir))
+        try:
+            yield None
+        finally:
+            library_data_dir.reset(token)
+
+    return override
+
+
+router = APIRouter(tags=["Library"], dependencies=[Depends(get_library_connection)])
 
 
 @contextmanager
@@ -81,24 +127,28 @@ def _set_fields(body, names: tuple[str, ...]) -> dict:
 
 
 @router.post("/api/library/projects")
+@bind_db
 def create_project(body: ProjectCreate, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return ProjectStore.create(conn, body.name, budget_cap=body.budget_cap)
 
 
 @router.get("/api/library/projects")
+@bind_db
 def list_projects(conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return {"projects": ProjectStore.list(conn)}
 
 
 @router.get("/api/library/projects/{project_id}")
+@bind_db
 def get_project(project_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return ProjectStore.open(conn, project_id)
 
 
 @router.post("/api/library/assets")
+@bind_db
 def create_asset(body: AssetCreate, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return AssetStore.create(
@@ -114,6 +164,7 @@ def create_asset(body: AssetCreate, conn: StoreConnection = Depends(get_library_
 
 
 @router.get("/api/library/assets")
+@bind_db
 def list_assets(
     project_id: Optional[str] = None,
     scope: Optional[str] = None,
@@ -138,6 +189,7 @@ def list_assets(
 
 
 @router.get("/api/library/search")
+@bind_db
 def search_assets(
     tag: list[str] = Query(...),
     project_id: Optional[str] = None,
@@ -160,12 +212,14 @@ def search_assets(
 
 
 @router.get("/api/library/assets/{asset_id}")
+@bind_db
 def get_asset(asset_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return AssetStore.get(conn, asset_id)
 
 
 @router.patch("/api/library/assets/{asset_id}")
+@bind_db
 def update_asset(
     asset_id: str,
     body: AssetUpdate,
@@ -180,6 +234,7 @@ def update_asset(
 
 
 @router.delete("/api/library/assets/{asset_id}")
+@bind_db
 def delete_asset(asset_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         if not AssetStore.delete(conn, asset_id):
@@ -188,6 +243,7 @@ def delete_asset(asset_id: str, conn: StoreConnection = Depends(get_library_conn
 
 
 @router.post("/api/library/assets/{asset_id}/promote")
+@bind_db
 def promote_asset(asset_id: str, conn: StoreConnection = Depends(get_library_connection)):
     """Lift a project asset into the global library."""
     with _errors():
@@ -195,6 +251,7 @@ def promote_asset(asset_id: str, conn: StoreConnection = Depends(get_library_con
 
 
 @router.post("/api/library/assets/{asset_id}/looks")
+@bind_db
 def create_look(
     asset_id: str,
     body: LookCreate,
@@ -213,6 +270,7 @@ def create_look(
 
 
 @router.get("/api/library/assets/{asset_id}/looks")
+@bind_db
 def list_looks(asset_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         AssetStore.get(conn, asset_id)
@@ -220,12 +278,14 @@ def list_looks(asset_id: str, conn: StoreConnection = Depends(get_library_connec
 
 
 @router.get("/api/library/looks/{look_id}")
+@bind_db
 def get_look(look_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return LookStore.get(conn, look_id)
 
 
 @router.patch("/api/library/looks/{look_id}")
+@bind_db
 def update_look(
     look_id: str,
     body: LookUpdate,
@@ -242,6 +302,7 @@ def update_look(
 
 
 @router.delete("/api/library/looks/{look_id}")
+@bind_db
 def delete_look(look_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         if not LookStore.delete(conn, look_id):
@@ -250,12 +311,14 @@ def delete_look(look_id: str, conn: StoreConnection = Depends(get_library_connec
 
 
 @router.get("/api/library/looks/{look_id}/versions")
+@bind_db
 def list_look_versions(look_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return {"versions": LookStore.list_versions(conn, look_id)}
 
 
 @router.post("/api/library/looks/{look_id}/rollback")
+@bind_db
 def rollback_look(
     look_id: str,
     body: LookRollback,
@@ -266,6 +329,7 @@ def rollback_look(
 
 
 @router.post("/api/library/looks/{look_id}/select-image")
+@bind_db
 def select_look_image(
     look_id: str,
     body: ImageSelect,
@@ -276,6 +340,7 @@ def select_look_image(
 
 
 @router.post("/api/library/looks/{look_id}/regenerate-quote")
+@bind_db
 def regenerate_quote(
     look_id: str,
     body: RegenerateQuoteRequest | None = None,
@@ -293,6 +358,7 @@ def regenerate_quote(
 
 
 @router.post("/api/library/looks/{look_id}/regenerate-confirm")
+@bind_db
 def regenerate_confirm(
     look_id: str,
     body: RegenerateConfirmRequest,
@@ -310,6 +376,7 @@ def regenerate_confirm(
 
 
 @router.post("/api/library/images")
+@bind_db
 def create_image(body: ImageCreate, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return ImageStore.create(
@@ -327,12 +394,14 @@ def create_image(body: ImageCreate, conn: StoreConnection = Depends(get_library_
 
 
 @router.get("/api/library/images/{image_id}")
+@bind_db
 def get_image(image_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         return ImageStore.get(conn, image_id)
 
 
 @router.get("/api/library/images")
+@bind_db
 def list_images(
     asset_id: Optional[str] = None,
     look_id: Optional[str] = None,
@@ -343,6 +412,7 @@ def list_images(
 
 
 @router.delete("/api/library/images/{image_id}")
+@bind_db
 def delete_image(image_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         if not ImageStore.delete(conn, image_id):
@@ -351,6 +421,7 @@ def delete_image(image_id: str, conn: StoreConnection = Depends(get_library_conn
 
 
 @router.post("/api/library/segments/{segment_asset_id}/refs")
+@bind_db
 def create_segment_ref(
     segment_asset_id: str,
     body: SegmentRefCreate,
@@ -368,6 +439,7 @@ def create_segment_ref(
 
 
 @router.get("/api/library/segments/{segment_asset_id}/refs")
+@bind_db
 def list_segment_refs(
     segment_asset_id: str,
     conn: StoreConnection = Depends(get_library_connection),
@@ -377,6 +449,7 @@ def list_segment_refs(
 
 
 @router.delete("/api/library/refs/{ref_id}")
+@bind_db
 def delete_segment_ref(ref_id: str, conn: StoreConnection = Depends(get_library_connection)):
     with _errors():
         if not SegmentRefStore.delete(conn, ref_id):
@@ -385,6 +458,7 @@ def delete_segment_ref(ref_id: str, conn: StoreConnection = Depends(get_library_
 
 
 @router.post("/api/library/resolve")
+@bind_db
 def resolve_mentions(
     body: ResolveRequest,
     conn: StoreConnection = Depends(get_library_connection),

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from api.routers.library import get_library_connection
+from api.routers.library import bind_db, get_library_connection
 from api.schemas.executor import (
     BudgetRaiseRequest,
     ConfirmRequest,
@@ -36,7 +36,7 @@ from storage.database import (
 )
 from storage.projects import ProjectStore
 
-router = APIRouter(tags=["Executor"])
+router = APIRouter(tags=["Executor"], dependencies=[Depends(get_library_connection)])
 
 _FORCE_NEW_REJECTED = "force_new is only valid on retry_video_submit"
 
@@ -75,6 +75,7 @@ def _graph_view(document: dict) -> dict:
 
 
 @router.post("/api/v2/projects")
+@bind_db
 def create_episode_project(
     body: EpisodeProjectCreate,
     conn: StoreConnection = Depends(get_library_connection),
@@ -96,6 +97,7 @@ def create_episode_project(
 
 
 @router.delete("/api/v2/projects/{project_id}")
+@bind_db
 def delete_project(
     project_id: str,
     conn: StoreConnection = Depends(get_library_connection),
@@ -108,6 +110,7 @@ def delete_project(
 
 
 @router.post("/api/v2/projects/{project_id}/stop")
+@bind_db
 def stop_project(
     project_id: str,
     conn: StoreConnection = Depends(get_library_connection),
@@ -121,6 +124,7 @@ def stop_project(
 
 
 @router.patch("/api/v2/projects/{project_id}/models")
+@bind_db
 def update_models(
     project_id: str,
     body: ModelUpdateRequest,
@@ -133,6 +137,7 @@ def update_models(
 
 
 @router.patch("/api/v2/projects/{project_id}/nodes/{node_id}/prompt")
+@bind_db
 def update_prompt(
     project_id: str,
     node_id: str,
@@ -144,6 +149,7 @@ def update_prompt(
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/run")
+@bind_db
 def run_node(
     project_id: str,
     node_id: str,
@@ -155,6 +161,7 @@ def run_node(
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/confirm")
+@bind_db
 def confirm_node(
     project_id: str,
     node_id: str,
@@ -170,6 +177,7 @@ def confirm_node(
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit")
+@bind_db
 def retry_video_submit(
     project_id: str,
     node_id: str,
@@ -183,6 +191,7 @@ def retry_video_submit(
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/decline")
+@bind_db
 def decline_node(
     project_id: str,
     node_id: str,
@@ -193,6 +202,7 @@ def decline_node(
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/regenerate")
+@bind_db
 def regenerate_node(
     project_id: str,
     node_id: str,
@@ -204,6 +214,7 @@ def regenerate_node(
 
 
 @router.post("/api/v2/projects/{project_id}/budget/{entry_id}/raise")
+@bind_db
 def raise_budget(
     project_id: str,
     entry_id: str,
@@ -215,6 +226,7 @@ def raise_budget(
 
 
 @router.post("/api/v2/projects/{project_id}/budget/{entry_id}/decline")
+@bind_db
 def decline_budget(
     project_id: str,
     entry_id: str,
@@ -225,6 +237,7 @@ def decline_budget(
 
 
 @router.get("/api/v2/projects/{project_id}/status")
+@bind_db
 def project_status(
     project_id: str,
     conn: StoreConnection = Depends(get_library_connection),
@@ -234,6 +247,7 @@ def project_status(
 
 
 @router.post("/api/v2/projects/{project_id}/looks/{look_id}/impact")
+@bind_db
 def impact_quote(
     project_id: str,
     look_id: str,
@@ -251,6 +265,7 @@ def impact_quote(
 
 
 @router.post("/api/v2/projects/{project_id}/looks/{look_id}/impact/confirm")
+@bind_db
 def impact_confirm(
     project_id: str,
     look_id: str,
@@ -268,6 +283,7 @@ def impact_confirm(
 
 
 @router.post("/api/v2/projects/{project_id}/impact/regenerate")
+@bind_db
 def impact_regenerate(
     project_id: str,
     body: ImpactRegenerateRequest,

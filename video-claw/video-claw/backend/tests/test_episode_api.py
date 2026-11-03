@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import app
-from api.routers.library import get_library_connection
+from api.routers.library import get_library_connection, use_data_dir
 from core.executor import GraphExecutor
 from graph.dependency_graph import DependencyGraph
 from graph.model import NodeStatus
@@ -94,14 +94,7 @@ def api(tmp_path, client, monkeypatch):
     monkeypatch.setattr(video_seedance.requests, "get", explode)
     data = tmp_path / "episode-api"
 
-    def override():
-        connection = Database.connect(data)
-        try:
-            yield connection
-        finally:
-            connection.close()
-
-    app.dependency_overrides[get_library_connection] = override
+    app.dependency_overrides[get_library_connection] = use_data_dir(data)
     adapter = RecordingAdapter()
 
     def factory(conn):
