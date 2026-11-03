@@ -1,8 +1,8 @@
 """Adapters over the clients that already live in ``models/``.
 
-``submit`` delegates to those clients. It does not replace ``LLM.query`` or
-the image and VLM routers. Video submit is owned by these adapters so a
-reference-image list reaches Seedance.
+Video submit is owned by these adapters so a reference-image list reaches
+Seedance. LLM chat completions go through ``OpenAICompatibleAdapter`` and
+``OpenAICompatLLM``. Image and VLM adapters still delegate to their clients.
 """
 
 from typing import Any, Optional
@@ -212,13 +212,26 @@ class OpenAIImageAdapter(ProviderAdapter):
 class OpenAICompatibleAdapter(ProviderAdapter):
     """OpenAI ``chat.completions`` surface for every LLM provider.
 
-    ``LLM.query`` keeps today's clients. R2 should call ``complete`` and
-    retire ``llm_gpt``, ``llm_deepseek``, ``llm_gemini``, and ``llm_dashscope``.
+    ``OpenAICompatLLM`` calls ``complete``. Keys and base URLs come from
+    ``Config`` via ``endpoint``. DashScope's configured root is the native
+    SDK URL (``/api/v1``); chat completions are on ``/compatible-mode/v1``
+    of the same host. Image, video, and VLM clients keep the native URL.
     """
 
     provider = "openai-compatible"
     providers = frozenset({"openai", "deepseek", "gemini", "dashscope", "ark"})
     modalities = frozenset({"llm"})
+
+    @staticmethod
+    def chat_base_url(provider: str, base_url: str) -> str:
+        if provider != "dashscope" or not base_url:
+            return base_url or ""
+        url = base_url.rstrip("/")
+        if url.endswith("/compatible-mode/v1"):
+            return url
+        if url.endswith("/api/v1"):
+            return url[: -len("/api/v1")] + "/compatible-mode/v1"
+        return url
 
     @staticmethod
     def endpoint(provider: str) -> tuple:
@@ -231,7 +244,8 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             "dashscope": (Config.DASHSCOPE_BASE_URL, Config.DASHSCOPE_API_KEY),
             "ark": (Config.ARK_BASE_URL, Config.ARK_API_KEY),
         }
-        return endpoints.get(provider, ("", ""))
+        base_url, api_key = endpoints.get(provider, ("", ""))
+        return OpenAICompatibleAdapter.chat_base_url(provider, base_url or ""), api_key or ""
 
     @staticmethod
     def messages(
@@ -251,10 +265,17 @@ class OpenAICompatibleAdapter(ProviderAdapter):
     def client(provider: str):
         from openai import OpenAI
 
+        from config import Config
+
         base_url, api_key = OpenAICompatibleAdapter.endpoint(provider)
-        kwargs = {"api_key": api_key or "missing"}
+        kwargs = {"api_key": api_key or "missing", "timeout": 300}
         if base_url:
             kwargs["base_url"] = base_url
+        proxy = Config.provider_proxy(provider)
+        if proxy:
+            import httpx
+
+            kwargs["http_client"] = httpx.Client(proxy=proxy, timeout=300)
         return OpenAI(**kwargs)
 
     @staticmethod

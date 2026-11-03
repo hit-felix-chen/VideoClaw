@@ -34,6 +34,16 @@ _CONFIG_PRICE_FIELDS = (
     ("price_per_second", PriceUnit.PER_SECOND),
 )
 
+# Alibaba documents enable_search on compatible-mode chat.completions, passed
+# as extra_body in the Python OpenAI SDK. The China (Beijing) chat list names
+# qwen3.7-max. It does not name qwen3.6-max-preview, qwen3-max, deepseek-v3.2,
+# or kimi-k2.6. Qwen3.6/3.5 multimodal ids must use the multimodal API, which
+# this LLM client does not call.
+# https://www.alibabacloud.com/help/en/model-studio/web-search
+_DASHSCOPE_WEB_SEARCH_DOC = "https://www.alibabacloud.com/help/en/model-studio/web-search"
+_DASHSCOPE_CHAT_WEB_SEARCH = frozenset({"qwen3.7-max"})
+_LLM_IMAGE_PROVIDERS = frozenset({"openai", "gemini"})
+
 
 class SpecCatalog:
     """Assemble specs. The registry is the only caller."""
@@ -50,6 +60,15 @@ class SpecCatalog:
         adapter_abilities = list(caps.get("adapter_ability_types") or [])
         if not abilities and adapter_abilities:
             abilities = list(adapter_abilities)
+        input_modalities = list(caps.get("input_modalities") or [])
+        adapter_input_modalities = list(caps.get("adapter_input_modalities") or [])
+        input_modalities, adapter_input_modalities, web_search = SpecCatalog._llm_contract(
+            model_id,
+            metadata.get("provider") or "unknown",
+            types,
+            input_modalities,
+            adapter_input_modalities,
+        )
         return ModelSpec(
             id=model_id,
             name=metadata.get("name") or model_id,
@@ -59,8 +78,9 @@ class SpecCatalog:
             abilities=abilities,
             adapter_abilities=adapter_abilities,
             ability_type=caps.get("ability_type") or (abilities[0] if abilities else ""),
-            input_modalities=list(caps.get("input_modalities") or []),
-            adapter_input_modalities=list(caps.get("adapter_input_modalities") or []),
+            input_modalities=input_modalities,
+            adapter_input_modalities=adapter_input_modalities,
+            web_search=web_search,
             output=SpecCatalog._output(types),
             concurrency=int(metadata.get("concurrency") or 1),
             resolutions=resolutions,
@@ -73,6 +93,73 @@ class SpecCatalog:
             max_reference_images=SpecCatalog._optional_int(caps.get("max_reference_images")),
             max_reference_images_verified=bool(caps.get("max_reference_images_verified", False)),
         )
+
+    @staticmethod
+    def _llm_contract(
+        model_id: str,
+        provider: str,
+        types: list,
+        input_modalities: list,
+        adapter_input_modalities: list,
+    ) -> tuple:
+        """Image input and web search for LLM rows. Other modalities stay untouched."""
+        if "llm" not in types:
+            return input_modalities, adapter_input_modalities, None
+        if not input_modalities:
+            # OpenAI and Gemini already sent image_url parts. DashScope text
+            # generation dropped image_urls; reject those instead of dropping
+            # them. A model registered as both llm and vlm keeps image parts
+            # on this same chat.completions call.
+            if "vlm" in types or provider in _LLM_IMAGE_PROVIDERS:
+                input_modalities = ["text", "image"]
+            else:
+                input_modalities = ["text"]
+        if not adapter_input_modalities:
+            adapter_input_modalities = list(input_modalities)
+        return input_modalities, adapter_input_modalities, SpecCatalog._llm_web_search(model_id, provider)
+
+    @staticmethod
+    def _llm_web_search(model_id: str, provider: str) -> dict:
+        if provider == "dashscope" and model_id in _DASHSCOPE_CHAT_WEB_SEARCH:
+            return {
+                "supported": True,
+                "verified": True,
+                "transport": "extra_body.enable_search",
+                "source": _DASHSCOPE_WEB_SEARCH_DOC,
+            }
+        if provider == "dashscope":
+            return {
+                "supported": False,
+                "verified": True,
+                "transport": None,
+                "source": _DASHSCOPE_WEB_SEARCH_DOC,
+                "note": (
+                    "compatible-mode chat.completions accepts extra_body.enable_search; "
+                    "this model id is not on the documented China (Beijing) chat list"
+                ),
+            }
+        if provider == "gemini":
+            return {
+                "supported": False,
+                "verified": True,
+                "transport": None,
+                "source": "Gemini chat.completions has no web_search parameter",
+            }
+        if provider == "deepseek":
+            return {
+                "supported": False,
+                "verified": True,
+                "transport": None,
+                "source": "DeepSeek chat.completions has no verified web_search parameter",
+            }
+        if provider == "openai":
+            return {
+                "supported": False,
+                "verified": True,
+                "transport": None,
+                "source": "OpenAI chat.completions has no enable_search parameter",
+            }
+        return {"supported": False, "verified": False, "transport": None, "source": ""}
 
     @staticmethod
     def _optional_int(value: Any) -> Optional[int]:

@@ -222,7 +222,7 @@ class DoctorAgent(AgentInterface):
         if rule_result:
             return self._validate_diagnosis(rule_result)
 
-        from models.llm_client import LLM
+        from models.llm_openai import OpenAICompatLLM
 
         template = load_prompt("doctor", "diagnose", "zh")
         validation_error = ""
@@ -239,7 +239,7 @@ class DoctorAgent(AgentInterface):
                 validation_error=validation_error or "无",
             )
             try:
-                raw = LLM().query(doctor_prompt, model=self.llm_model, safe_content=False)
+                raw = OpenAICompatLLM().query(doctor_prompt, model=self.llm_model, safe_content=False)
                 data = self._load_json_object(raw)
                 return self._validate_diagnosis(data)
             except Exception as exc:
@@ -265,7 +265,7 @@ class DoctorAgent(AgentInterface):
         if reason_type not in REWRITABLE_REASON_TYPES:
             return None
 
-        from models.llm_client import LLM
+        from models.llm_openai import OpenAICompatLLM
 
         template = load_prompt("doctor", "rewrite_prompt", "zh")
         validation_error = ""
@@ -279,7 +279,7 @@ class DoctorAgent(AgentInterface):
                 validation_error=validation_error or "无",
             )
             try:
-                raw = LLM().query(rewrite_prompt, model=self.llm_model, safe_content=False)
+                raw = OpenAICompatLLM().query(rewrite_prompt, model=self.llm_model, safe_content=False)
                 data = self._load_json_object(raw)
                 return self._validate_rewrite(data, prompt)
             except Exception as exc:

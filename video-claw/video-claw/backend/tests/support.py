@@ -67,7 +67,7 @@ class FakeModelClients:
             def query(self, prompt, model=None, web_search=False, **kwargs):
                 return text
 
-        monkeypatch.setattr("models.llm_client.LLM", LLM)
+        monkeypatch.setattr("models.llm_openai.OpenAICompatLLM", LLM)
 
     @staticmethod
     def vlm(monkeypatch, text: str = "mocked-vlm") -> None:

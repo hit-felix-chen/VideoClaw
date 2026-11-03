@@ -230,8 +230,8 @@ class ScriptWriterAgent(AgentInterface):
             sequel_idea = intervention.get("sequel_idea", "").strip()
 
             from config import settings as app_settings
-            from models.llm_client import LLM
-            llm = LLM()
+            from models.llm_openai import OpenAICompatLLM
+            llm = OpenAICompatLLM()
 
             def _log_progress(pct, msg):
                 self._report_progress("智能续写", msg, pct)
@@ -382,9 +382,9 @@ class ScriptWriterAgent(AgentInterface):
             is_zh = any('\u4e00' <= c <= '\u9fff' for c in idea)
 
             from config import settings as app_settings
-            from models.llm_client import LLM
+            from models.llm_openai import OpenAICompatLLM
             os.makedirs(app_settings.TEMP_DIR, exist_ok=True)
-            llm = LLM()
+            llm = OpenAICompatLLM()
 
             def _log_progress(pct, msg):
                 self._report_progress("剧本生成", msg, pct)

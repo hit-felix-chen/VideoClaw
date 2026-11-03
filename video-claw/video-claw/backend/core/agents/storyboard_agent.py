@@ -486,14 +486,14 @@ class StoryboardAgent(AgentInterface):
         label: str,
         max_retries: int = 3,
     ) -> List[dict]:
-        from models.llm_client import LLM
+        from models.llm_openai import OpenAICompatLLM
 
         loop = asyncio.get_running_loop()
         last_error: Optional[Exception] = None
         raw = ""
         for attempt in range(max_retries):
             try:
-                llm = LLM()
+                llm = OpenAICompatLLM()
                 raw = await loop.run_in_executor(
                     None,
                     self._cancellable_query,
@@ -524,14 +524,14 @@ class StoryboardAgent(AgentInterface):
         label: str,
         max_retries: int = 3,
     ) -> dict:
-        from models.llm_client import LLM
+        from models.llm_openai import OpenAICompatLLM
 
         loop = asyncio.get_running_loop()
         last_error: Optional[Exception] = None
         raw = ""
         for attempt in range(max_retries):
             try:
-                llm = LLM()
+                llm = OpenAICompatLLM()
                 raw = await loop.run_in_executor(
                     None,
                     self._cancellable_query,
