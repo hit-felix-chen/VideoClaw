@@ -250,8 +250,6 @@ class Config:
     RESULT_DIR = os.path.join(CODE_DIR, "result")
     TEMP_DIR = os.path.join(BASE_DIR, "temp")
     SESSION_DIR = os.path.join(CODE_DIR, "data", "sessions")
-    TASK_DIR = os.path.join(CODE_DIR, "data", "tasks")
-    TASK_RESULT_DIR = os.path.join(RESULT_DIR, "task")
 
     @classmethod
     def as_dict(cls) -> Dict[str, Any]:
@@ -327,9 +325,7 @@ class Config:
             cls.CODE_DIR,
             data_dir,
             cls.SESSION_DIR,
-            cls.TASK_DIR,
             cls.RESULT_DIR,
-            cls.TASK_RESULT_DIR,
             cls.TEMP_DIR,
         ]:
             if not os.path.exists(directory):

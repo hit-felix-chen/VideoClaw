@@ -8,12 +8,6 @@ from .sandbox import (
     SandboxI2IRequest,
     SandboxVideoRequest,
 )
-from .pipelines import (
-    StandardPipelineRequest,
-    ActionTransferPipelineRequest,
-    DigitalHumanPipelineRequest,
-    GenericPipelineRequest,
-)
 
 __all__ = [
     "ProjectStartRequest",
@@ -23,8 +17,4 @@ __all__ = [
     "SandboxT2IRequest",
     "SandboxI2IRequest",
     "SandboxVideoRequest",
-    "StandardPipelineRequest",
-    "ActionTransferPipelineRequest",
-    "DigitalHumanPipelineRequest",
-    "GenericPipelineRequest",
 ]

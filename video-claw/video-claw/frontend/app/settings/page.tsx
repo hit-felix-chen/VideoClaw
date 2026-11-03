@@ -116,7 +116,7 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
   },
   {
     title: 'Default Models',
-    description: '主流程和 Pipeline 使用的默认模型。',
+    description: '主流程使用的默认模型。',
     fields: [
       { path: 'models.llm', label: 'llm 文本模型', type: 'select', options: [] },
       { path: 'models.vlm', label: 'vlm 视觉语言模型', type: 'select', options: [] },
