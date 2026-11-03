@@ -1,6 +1,5 @@
 """Pydantic request/response schemas."""
 
-from .project import ProjectStartRequest, InterventionRequest
 from .sandbox import (
     SandboxLLMRequest,
     SandboxVLMRequest,
@@ -10,8 +9,6 @@ from .sandbox import (
 )
 
 __all__ = [
-    "ProjectStartRequest",
-    "InterventionRequest",
     "SandboxLLMRequest",
     "SandboxVLMRequest",
     "SandboxT2IRequest",

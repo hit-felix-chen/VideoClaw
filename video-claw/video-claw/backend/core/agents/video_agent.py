@@ -9,7 +9,6 @@
 
 import os
 import re
-import glob
 import asyncio
 import logging
 import threading
@@ -17,7 +16,6 @@ from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .base_agent import AgentInterface
-from .last_frame_chain import LastFrameChain
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +33,24 @@ class VideoDirectorAgent(AgentInterface):
         return os.path.join('code/result/video', str(sid))
 
     def _list_versions(self, sid: str, segment_id: str) -> List[str]:
-        """列出某个片段视频的所有历史版本"""
+        """List version files for this segment id only.
+
+        ``seg_1`` does not include ``seg_10``. Final cuts (``*_final.mp4``)
+        are not versions. This is not the reference-to-video path.
+        """
         video_dir = self._video_base(sid)
-        pattern = os.path.join(video_dir, f"{segment_id}*.mp4")
-        files = [f for f in sorted(glob.glob(pattern), key=os.path.getmtime)
-                 if not f.endswith('_final.mp4')]
-        return files
+        if not os.path.isdir(video_dir):
+            return []
+        pattern = re.compile(
+            rf"^{re.escape(segment_id)}(?:_v\d+)?\.mp4$",
+            re.IGNORECASE,
+        )
+        files = [
+            os.path.join(video_dir, name)
+            for name in os.listdir(video_dir)
+            if pattern.match(name)
+        ]
+        return sorted(set(files), key=os.path.getmtime)
 
     def _next_version_path(self, sid: str, segment_id: str) -> str:
         """获取下一个版本路径"""
@@ -443,521 +453,89 @@ class VideoDirectorAgent(AgentInterface):
             "stage_completed": True,
         }
 
-    def _generate_chain(
-        self,
-        *,
-        sid: str,
-        segments: list,
-        scene_map: dict,
-        clip_map: dict,
-        character_art: dict,
-        style_prompt: str,
-        video_generation_mode: str,
-        video_model: str,
-        video_sound: str,
-        video_shot_type: str,
-        video_ratio: str,
-        video_resolution: str,
-        llm_model: str,
-        concurrency: int,
-        rewrite_results_map: dict,
-        use_saved_prompt: bool,
-        only_ids: Optional[set] = None,
-    ) -> List[str]:
-        """Generate episode by episode. Episodes stay parallel; shots inside one do not.
 
-        Returns the segment ids that produced a new file. only_ids restricts
-        regeneration; None generates every segment that does not already have a file.
+    def execute_node(self, call: dict) -> dict:
+        """Build a Seedance reference-to-video request.
+
+        Reference ids come from ``SegmentRefStore.resolve`` output already
+        stored on the call. File-name prefixes are not searched.
         """
-        segment_map = {
-            seg.get("segment_id"): seg
-            for seg in segments
-            if isinstance(seg, dict) and seg.get("segment_id")
+        from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
+        from models.middle.normalize import ParamNormalizer
+        from models.middle.registry import ModelRegistry
+
+        model_id = call.get("model_id") or DEFAULT_REFERENCE_VIDEO_MODEL
+        spec = ModelRegistry.get(model_id)
+        if spec is None:
+            return {
+                "provider_called": False,
+                "modality": "video",
+                "model_id": model_id,
+                "error": "model is not registered",
+            }
+        paths = _reference_asset_ids(call.get("references"))
+        limit = spec.max_reference_images
+        truncated = False
+        if isinstance(limit, int) and not isinstance(limit, bool) and len(paths) > limit:
+            paths = paths[:limit]
+            truncated = True
+        params = {
+            "prompt": call.get("text") or "",
+            "reference_image_paths": paths,
+            "resolution": call.get("resolution") or spec.default_resolution,
+        }
+        duration = _capability_duration(spec, call.get("shot_duration"))
+        if duration is not None:
+            params["duration"] = duration
+        normalized = ParamNormalizer.video(spec, params)
+        return {
+            "provider_called": False,
+            "modality": "video",
+            "model_id": spec.id,
+            "ability": "reference_to_video",
+            "generation_mode": normalized.get("generation_mode"),
+            "reference_image_paths": list(normalized.get("reference_image_paths") or []),
+            "duration": normalized.get("duration"),
+            "resolution": normalized.get("resolution"),
+            "truncated": truncated,
+            "reference_limit": limit,
         }
 
-        def reference_for(seg: dict) -> str:
-            return self._get_reference_image(sid, seg["segment_id"], scene_map)
 
-        plans = LastFrameChain.plan_first_frames(
-            segments, chain=True, sid=sid, reference_for=reference_for,
-        )
-        grouped: Dict[int, list] = {}
-        for plan in plans:
-            grouped.setdefault(plan["parallel_group"], []).append(plan)
+def _reference_asset_ids(references) -> list:
+    """Mention order, first resolved asset only, no filename matching."""
+    if not isinstance(references, dict):
+        return []
+    found = []
+    for mention in references.get("mentions") or []:
+        if not isinstance(mention, dict) or not mention.get("resolved"):
+            continue
+        for match in mention.get("matches") or []:
+            if not isinstance(match, dict):
+                continue
+            asset_id = match.get("asset_id")
+            if isinstance(asset_id, str) and asset_id and asset_id not in found:
+                found.append(asset_id)
+                break
+    return found
 
-        def needs_work(plan: dict) -> bool:
-            if only_ids is not None:
-                return plan["segment_id"] in only_ids
-            return not self._list_versions(sid, plan["segment_id"])
 
-        groups = [grouped[key] for key in sorted(grouped) if any(needs_work(plan) for plan in grouped[key])]
-        total = sum(1 for group in groups for plan in group if needs_work(plan))
-        if total == 0:
-            if only_ids is None:
-                self._report_progress("视频生成", "所有视频片段已存在", 95)
-            return []
-
-        generated: List[str] = []
-        state_lock = threading.Lock()
-        done = 0
-
-        def run_group(group: list) -> None:
-            nonlocal done
-            produced: Dict[str, str] = {}
-            for plan in group:
-                seg_id = plan["segment_id"]
-                seg = segment_map.get(seg_id)
-                if not seg:
-                    continue
-                if self.cancellation_check and self.cancellation_check():
-                    return
-                existing = self._list_versions(sid, seg_id)
-                if not needs_work(plan):
-                    chosen = LastFrameChain.selected_video_path(clip_map.get(seg_id), existing)
-                    if chosen:
-                        produced[seg_id] = chosen
-                    continue
-
-                prompt = self._assemble_prompt(
-                    seg,
-                    style_prompt,
-                    character_art,
-                    video_data=clip_map.get(seg_id) if use_saved_prompt else None,
-                )
-                img_path = plan["reference_path"]
-                prev_id = plan.get("prev_id")
-                if plan.get("chained") and prev_id:
-                    prev_video = produced.get(prev_id) or LastFrameChain.selected_video_path(
-                        clip_map.get(prev_id),
-                        self._list_versions(sid, prev_id),
-                    )
-                    if prev_video:
-                        frame_path = plan["img_path"]
-                        try:
-                            from core.utils.video_frames import extract_last_frame
-                            extract_last_frame(prev_video, frame_path)
-                            if os.path.exists(frame_path):
-                                img_path = frame_path
-                        except Exception as exc:
-                            logger.warning(
-                                "VideoDirectorAgent: %s 尾帧抽取失败，回退参考图: %s",
-                                seg_id, exc,
-                            )
-                    else:
-                        logger.warning(
-                            "VideoDirectorAgent: %s 缺少上一片段所选视频，回退参考图",
-                            seg_id,
-                        )
-
-                reference_image_paths = None
-                duration = seg.get("total_duration", 10)
-                seg_index = segments.index(seg)
-                last_img_path = self._get_next_reference_image(sid, seg_index, segments, scene_map)
-                if video_generation_mode == "start_end_frame" and not last_img_path:
-                    logger.warning(
-                        "VideoDirectorAgent: %s 首尾帧模式缺少尾帧，回退为首帧生视频入参",
-                        seg_id,
-                    )
-                running = {
-                    "type": "clips",
-                    "id": seg_id,
-                    "status": "running",
-                }
-                if only_ids is not None:
-                    running["versions"] = existing
-                self._report_progress("视频生成", f"启动生成: {seg_id}", 5, data={
-                    "asset_complete": running,
-                })
-                try:
-                    _, res_path, rewrite_result = self._generate_one(
-                        sid, seg_id, prompt,
-                        img_path, video_model, duration,
-                        video_sound, video_shot_type, video_ratio, video_resolution,
-                        video_generation_mode, last_img_path, reference_image_paths, llm_model,
-                    )
-                except Exception as exc:
-                    logger.error(f"Video future error for {seg_id}: {exc}")
-                    res_path = None
-                    rewrite_result = None
-                if rewrite_result:
-                    with state_lock:
-                        rewrite_results_map[seg_id] = rewrite_result
-                if res_path:
-                    produced[seg_id] = res_path
-                    with state_lock:
-                        generated.append(seg_id)
-                        done += 1
-                        pct = 5 + int(90 * done / max(1, total))
-                    versions = self._list_versions(sid, seg_id)
-                    asset_complete = {
-                        "type": "clips", "id": seg_id,
-                        "status": "done",
-                        "selected": res_path,
-                        "versions": versions,
-                    }
-                    if rewrite_results_map.get(seg_id):
-                        asset_complete["rewrite_result"] = rewrite_results_map[seg_id]
-                    self._report_progress("视频生成", f"完成: {seg_id}", pct, data={
-                        "asset_complete": asset_complete,
-                    })
-                else:
-                    chosen = LastFrameChain.selected_video_path(clip_map.get(seg_id), existing)
-                    if chosen:
-                        produced[seg_id] = chosen
-                    with state_lock:
-                        done += 1
-                        pct = 5 + int(90 * done / max(1, total))
-                    asset_complete = {
-                        "type": "clips", "id": seg_id,
-                        "status": "failed",
-                        "selected": "", "versions": [],
-                    }
-                    if rewrite_results_map.get(seg_id):
-                        asset_complete["rewrite_result"] = rewrite_results_map[seg_id]
-                    self._report_progress("视频生成", f"失败: {seg_id}", pct, data={
-                        "asset_complete": asset_complete,
-                    })
-
-        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [executor.submit(run_group, group) for group in groups]
-            for future in as_completed(futures):
-                try:
-                    future.result()
-                except Exception as exc:
-                    logger.error(f"Video chain episode error: {exc}")
-                if self.cancellation_check and self.cancellation_check():
-                    for pending in futures:
-                        if not pending.done():
-                            pending.cancel()
-                    break
-        return generated
-
-    def _update_session_video_data(self, sid: str, segments: list, style_prompt: str) -> None:
-        """保留兼容入口；session 状态统一由 WorkflowEngine 持久化。"""
-        return
-
-    # ─── 核心流程 ───
-
-    async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
-        from config import settings
-        
-        input_data = self._merge_session_params(input_data)
-        sid = input_data["session_id"]
-        
-        # ═══ 介入：用户选择指定版本 ═══
-        if intervention and "selected_clips" in intervention:
-            selected_clips = intervention["selected_clips"] # Dict[segment_id, path]
-            logger.info(f"[VideoAgent] 用户更新片段选择: {selected_clips}")
-
-            # 返回当前状态
-            artifacts = self._session_artifacts(input_data)
-            episodes = artifacts.get('storyboard', {}).get('episodes', [])
-            segments = []
-            for ep in episodes:
-                segments.extend(ep.get("segments", []))
-            video_clips = artifacts.get('video_generation', {}).get('clips', [])
-            payload = self._build_payload(sid, segments, video_clips)
-            for clip in payload.get("payload", {}).get("clips", []):
-                clip_id = clip.get("id")
-                if clip_id in selected_clips:
-                    clip["selected"] = selected_clips[clip_id]
-            return payload
-
-        session_meta = self._session_meta(input_data)
-        video_generation_mode, video_model = self._select_video_model(input_data, session_meta)
-        llm_model = input_data.get("llm_model") or session_meta.get("llm_model") or ""
-        enable_concurrency = input_data.get("enable_concurrency", True)
-        from models.config_model import get_max_concurrency
-        concurrency = get_max_concurrency(video_model, enable_concurrency)
-        
-        video_ratio = input_data.get("video_ratio", "16:9")
-        video_resolution = input_data.get("video_resolution", "720P")
-        video_sound = "on"
-        video_shot_type = "multi"
-
-        artifacts = self._session_artifacts(input_data)
-        
-        # 1. 获取拍摄片段列表 (从 Storyboard)
-        episodes = artifacts.get('storyboard', {}).get('episodes', [])
-        segments = []
-        for ep in episodes:
-            segments.extend(ep.get("segments", []))
-        if not segments:
-            raise Exception("未找到分镜片段数据，请先完成阶段3")
-        
-        video_clips = artifacts.get('video_generation', {}).get('clips', [])
-        rewrite_results_map = self._collect_rewrite_results(video_clips)
-
-        # 2. 获取参考图路径映射 (从 Reference Generation)
-        ref_art = artifacts.get('reference_generation', {})
-        scene_list = ref_art.get('scenes', [])
-        scene_map = {s['id']: s for s in scene_list if 'id' in s}
-        character_art = artifacts.get('character_design', {})
-        
-        style_zh = input_data.get('style') or session_meta.get('style') or 'realistic'
-        # 简单映射为中文显示名
-        style_map_zh = {
-            "anime": "动漫",
-            "realistic": "写实",
-            "cartoon": "卡通",
-            "3d-disney": "3D迪斯尼",
-            "oil-painting": "油画",
-            "chinese-ink": "国画",
-            "comic-book": "美漫",
-            "cyberpunk": "赛博朋克"
-        }
-        style_name = style_map_zh.get(style_zh, style_zh)
-        style_prompt = self._get_style_prompt(style_zh)
-        chain_active = LastFrameChain.active(input_data.get("chain_last_frame"), video_generation_mode)
-        clip_map = {
-            clip.get("id"): clip
-            for clip in video_clips
-            if isinstance(clip, dict) and clip.get("id")
-        }
-
-        # ═══ 介入：重新生成指定片段 ═══
-        if intervention:
-            regen_ids = intervention.get("regenerate_clips", [])
-            if regen_ids:
-                if intervention.get("cascade"):
-                    regen_ids = LastFrameChain.expand_cascade(list(regen_ids), segments, True)
-                    intervention["regenerate_clips"] = regen_ids
-                if chain_active:
-                    self._report_progress("视频生成", "重新生成中...", 5)
-
-                    def chain_regen():
-                        self._generate_chain(
-                            sid=sid,
-                            segments=segments,
-                            scene_map=scene_map,
-                            clip_map=clip_map,
-                            character_art=character_art,
-                            style_prompt=style_prompt,
-                            video_generation_mode=video_generation_mode,
-                            video_model=video_model,
-                            video_sound=video_sound,
-                            video_shot_type=video_shot_type,
-                            video_ratio=video_ratio,
-                            video_resolution=video_resolution,
-                            llm_model=llm_model,
-                            concurrency=concurrency,
-                            rewrite_results_map=rewrite_results_map,
-                            use_saved_prompt=True,
-                            only_ids=set(regen_ids),
-                        )
-
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, chain_regen)
-                    self._update_session_video_data(sid, segments, style_prompt)
-                    return self._build_payload(
-                        sid, segments, video_clips, rewrite_results_map,
-                        stale_ids=LastFrameChain.stale_ids(regen_ids, segments),
-                        fresh_ids=list(regen_ids),
-                    )
-                self._report_progress("视频生成", "重新生成中...", 5)
-                segment_map = {s['segment_id']: s for s in segments}
-                clip_map = {c['id']: c for c in video_clips}
-                
-                def regen_run():
-                    done = 0
-                    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                        futs = {}
-                        for seg_id in regen_ids:
-                            seg = segment_map.get(seg_id)
-                            clip = clip_map.get(seg_id) if clip_map.get(seg_id) else None
-                            if not seg: continue
-                            prompt = self._assemble_prompt(seg, style_prompt, character_art, video_data=clip)
-
-                            reference_image_paths = None
-                            if video_generation_mode == "reference":
-                                img_path = None
-                                reference_image_paths = self._get_segment_reference_assets(seg, character_art)
-                                if not reference_image_paths:
-                                    logger.warning("VideoDirectorAgent: %s 参考图模式未匹配到第二阶段人物/场景图", seg_id)
-                            else:
-                                img_path = self._get_reference_image(sid, seg_id, scene_map)
-                            duration = seg.get("total_duration", 10)
-                            seg_index = segments.index(seg)
-                            last_img_path = self._get_next_reference_image(sid, seg_index, segments, scene_map)
-                            if video_generation_mode == "start_end_frame" and not last_img_path:
-                                logger.warning("VideoDirectorAgent: %s 首尾帧模式缺少尾帧，回退为首帧生视频入参", seg_id)
-                            existing_versions = self._list_versions(sid, seg_id)
-                            self._report_progress("视频生成", f"启动生成: {seg_id}", 5, data={
-                                "asset_complete": {
-                                    "type": "clips", "id": seg_id,
-                                    "status": "running",
-                                    "versions": existing_versions,
-                                }
-                            })
-                            fut = executor.submit(
-                                self._generate_one, sid, seg_id, prompt,
-                                img_path, video_model, duration,
-                                video_sound, video_shot_type, video_ratio, video_resolution,
-                                video_generation_mode, last_img_path, reference_image_paths, llm_model
-                            )
-                            futs[fut] = seg_id
-                        for fut in as_completed(futs):
-                            sid_done = futs[fut]
-                            try:
-                                _, res_path, rewrite_result = fut.result()
-                                if rewrite_result:
-                                    rewrite_results_map[sid_done] = rewrite_result
-                            except Exception as e:
-                                logger.error(f"Regen future error for {sid_done}: {e}")
-                                res_path = None
-                            done += 1
-                            pct = 5 + int(90 * done / max(1, len(regen_ids)))
-                            if res_path:
-                                versions = self._list_versions(sid, sid_done)
-                                asset_complete = {
-                                    "type": "clips", "id": sid_done,
-                                    "status": "done",
-                                    "selected": res_path,
-                                    "versions": versions,
-                                }
-                                if rewrite_results_map.get(sid_done):
-                                    asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
-                                self._report_progress("视频生成", f"完成: {sid_done}", pct, data={
-                                    "asset_complete": asset_complete
-                                })
-                            else:
-                                asset_complete = {
-                                    "type": "clips", "id": sid_done,
-                                    "status": "failed",
-                                    "selected": "", "versions": [],
-                                }
-                                if rewrite_results_map.get(sid_done):
-                                    asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
-                                self._report_progress("视频生成", f"失败: {sid_done}", pct, data={
-                                    "asset_complete": asset_complete
-                                })
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, regen_run)
-                
-                # 同步到 session artifacts
-                self._update_session_video_data(sid, segments, style_prompt)
-                
-                return self._build_payload(sid, segments, video_clips, rewrite_results_map)
-
-        # ═══ 正常流程：全量生成 ═══
-        self._report_progress("视频生成", "正在准备数据...", 2)
-        preview = self._build_preview(sid, segments, scene_map, video_clips)
-        self._report_progress("视频生成", "加载视频列表", 5, data={"assets_preview": {"clips": preview}})
-
-        generated_ids: List[str] = []
-
-        def run():
-            if chain_active:
-                generated_ids.extend(self._generate_chain(
-                    sid=sid,
-                    segments=segments,
-                    scene_map=scene_map,
-                    clip_map=clip_map,
-                    character_art=character_art,
-                    style_prompt=style_prompt,
-                    video_generation_mode=video_generation_mode,
-                    video_model=video_model,
-                    video_sound=video_sound,
-                    video_shot_type=video_shot_type,
-                    video_ratio=video_ratio,
-                    video_resolution=video_resolution,
-                    llm_model=llm_model,
-                    concurrency=concurrency,
-                    rewrite_results_map=rewrite_results_map,
-                    use_saved_prompt=False,
-                    only_ids=None,
-                ))
-                return
-            tasks = []
-            for seg_index, seg in enumerate(segments):
-                seg_id = seg["segment_id"]
-                existing = self._list_versions(sid, seg_id)
-                if existing: continue
-                prompt = self._assemble_prompt(seg, style_prompt, character_art)
-                reference_image_paths = None
-                if video_generation_mode == "reference":
-                    img_path = None
-                    reference_image_paths = self._get_segment_reference_assets(seg, character_art)
-                    if not reference_image_paths:
-                        logger.warning("VideoDirectorAgent: %s 参考图模式未匹配到第二阶段人物/场景图", seg_id)
-                else:
-                    img_path = self._get_reference_image(sid, seg_id, scene_map)
-                duration = seg.get("total_duration", 10)
-                last_img_path = self._get_next_reference_image(sid, seg_index, segments, scene_map)
-                if video_generation_mode == "start_end_frame" and not last_img_path:
-                    logger.warning("VideoDirectorAgent: %s 首尾帧模式缺少尾帧，回退为首帧生视频入参", seg_id)
-                tasks.append((seg_id, prompt, img_path, duration, last_img_path, reference_image_paths))
-            if not tasks:
-                self._report_progress("视频生成", "所有视频片段已存在", 95)
-                return
-            done = 0
-            with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                futs = {}
-                for seg_id, prompt, img_path, dur, last_img_path, reference_image_paths in tasks:
-                    # 提交前立即发送正在运行的状态，让前端 UI 更新
-                    self._report_progress("视频生成", f"启动生成: {seg_id}", 5, data={
-                        "asset_complete": {
-                            "type": "clips", "id": seg_id,
-                            "status": "running"
-                        }
-                    })
-                    fut = executor.submit(
-                        self._generate_one, sid, seg_id, prompt,
-                        img_path, video_model, dur,
-                        video_sound, video_shot_type, video_ratio, video_resolution,
-                        video_generation_mode, last_img_path, reference_image_paths, llm_model
-                    )
-                    futs[fut] = seg_id
-                for fut in as_completed(futs):
-                    sid_done = futs[fut]
-                    try:
-                        _, res_path, rewrite_result = fut.result()
-                        if rewrite_result:
-                            rewrite_results_map[sid_done] = rewrite_result
-                    except Exception as e:
-                        logger.error(f"Video future error for {sid_done}: {e}")
-                        res_path = None
-                    done += 1
-                    pct = 5 + int(90 * done / max(1, len(tasks)))
-                    if res_path:
-                        versions = self._list_versions(sid, sid_done)
-                        asset_complete = {
-                            "type": "clips", "id": sid_done,
-                            "status": "done",
-                            "selected": res_path,
-                            "versions": versions,
-                        }
-                        if rewrite_results_map.get(sid_done):
-                            asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
-                        self._report_progress("视频生成", f"完成: {sid_done}", pct, data={
-                            "asset_complete": asset_complete
-                        })
-                    else:
-                        asset_complete = {
-                            "type": "clips", "id": sid_done,
-                            "status": "failed",
-                            "selected": "", "versions": [],
-                        }
-                        if rewrite_results_map.get(sid_done):
-                            asset_complete["rewrite_result"] = rewrite_results_map[sid_done]
-                        self._report_progress("视频生成", f"失败: {sid_done}", pct, data={
-                            "asset_complete": asset_complete
-                        })
-                    if self.cancellation_check and self.cancellation_check():
-                        for f in futs:
-                            if not f.done(): f.cancel()
-                        break
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run)
-        
-        # 同步到 session artifacts
-        self._update_session_video_data(sid, segments, style_prompt)
-        
-        self._report_progress("视频生成", "完成", 100)
-        if chain_active:
-            return self._build_payload(
-                sid, segments, video_clips, rewrite_results_map,
-                stale_ids=LastFrameChain.stale_ids(generated_ids, segments),
-                fresh_ids=generated_ids,
-            )
-        return self._build_payload(sid, segments, video_clips, rewrite_results_map)
+def _capability_duration(spec, shot_duration):
+    """Use a shot length only when it sits inside the model's verified range."""
+    limit = spec.duration
+    if limit is None or not limit.verified:
+        return None
+    if isinstance(shot_duration, (int, float)) and not isinstance(shot_duration, bool):
+        number = float(shot_duration)
+        if not limit.integer or number.is_integer():
+            seconds = int(number) if limit.integer else number
+            lower_ok = limit.min_seconds is None or seconds >= limit.min_seconds
+            upper_ok = limit.max_seconds is None or seconds <= limit.max_seconds
+            if lower_ok and upper_ok:
+                return seconds
+    default = limit.default
+    if isinstance(default, int) and not isinstance(default, bool) and default > 0:
+        return default
+    if limit.allow_auto:
+        return -1
+    return None

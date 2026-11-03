@@ -241,17 +241,6 @@ class TestSegmentPlan:
         assert segment["shots"][0]["duration"] == StoryboardAgent.MIN_SEGMENT_DURATION
         assert sum(shot["duration"] for shot in segment["shots"]) == segment["total_duration"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG storyboard_agent.py:939 _ensure_segment_duration returns min(sum, 15) "
-            "while _segment_from_shots (line 972) leaves each shot at up to 15s. "
-            "Two 10s shots are stored as 10+10 but total_duration is 15. "
-            "Repro: StoryboardAgent._segment_from_shots(1, 2, '教室', "
-            "[{'duration': 10, 'shot_type': '中景', 'content': '中景，甲'}, "
-            "{'duration': 10, 'shot_type': '全景', 'content': '全景，乙'}], ['张三'])."
-        ),
-    )
     def test_segment_total_matches_shot_durations_when_shots_sum_past_the_cap(self):
         shots = [
             {"duration": 10, "shot_type": "中景", "content": "中景，甲"},

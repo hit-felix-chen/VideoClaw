@@ -4,7 +4,7 @@
 """
 
 import logging
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Optional, Dict, Callable
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ SESSION_PARAM_KEYS = [
     "llm_model", "vlm_model",
     "image_t2i_model", "image_it2i_model", "video_model",
     "video_first_frame_model", "video_start_end_model", "video_reference_model",
-    "video_generation_mode", "chain_last_frame",
+    "video_generation_mode",
     "video_style", "expand_idea", "enable_concurrency", "web_search", "episodes"
 ]
 
@@ -91,19 +91,3 @@ class AgentInterface(ABC):
                 return f.read().strip()
         # Fallback to English style name if file doesn't exist
         return style_name + " style"
-
-    # -------- 抽象方法 --------
-
-    @abstractmethod
-    async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
-        """
-        核心处理逻辑
-
-        Args:
-            input_data: 来自上一阶段的输入数据
-            intervention: 用户介入修改内容
-
-        Returns:
-            dict: { "payload": ..., "requires_intervention": bool }
-        """
-        pass

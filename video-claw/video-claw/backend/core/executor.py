@@ -25,17 +25,10 @@ A model with no documented API price is not given a number. Segment
 duration for a video quote comes from that model's verified capability,
 not from a caller-supplied length.
 
-The legacy stage machine stays beside this entrance. Cutover, once R8's
-reference-to-video path is on this fork, still has to remove:
-
-- ``core/orchestrator.py``
-- ``api/routers/workflow.py`` (P4 ``cost_estimate`` and the continue API)
-- ``api/routers/sessions.py``
-- ``api/routers/stages.py``
-- stage ``process()`` providers, including P3 last-frame chaining in
-  ``core/agents/video_agent.py`` and ``core/agents/last_frame_chain.py``
-
-``session.py`` had no callers and is already gone.
+The stage machine is gone. ``run_node`` dispatches to the agent node
+executors after the gate. Video defaults to Seedance 2.5 reference mode.
+Script and storyboard nodes run without a per-call confirm and without a
+ledger row. Image, VLM, and TTS still reserve immediately.
 """
 
 from __future__ import annotations
@@ -45,6 +38,7 @@ from typing import Any, Callable, Optional
 from graph.dependency_graph import DependencyGraph
 from graph.model import NodeStatus
 from models.middle.budget import ProjectBudget, pause_message
+from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
 from models.middle.pricing import QuoteRequest, quote
 from models.middle.registry import ModelRegistry
 from storage.confirmations import ImpactConfirmation
@@ -57,7 +51,14 @@ _VIDEO = frozenset({"shot_segment", "draft_video", "final_video", "segment", "vi
 _IMAGE = frozenset({"character", "scene", "setting", "keyframe", "image"})
 _NAMED = frozenset({"video", "image", "vlm", "tts"})
 _BUDGET_ONLY = frozenset({"image", "vlm", "tts"})
+_STRUCTURAL = frozenset({"script", "storyboard", "previz"})
 _OPEN = frozenset({NodeStatus.PENDING, NodeStatus.STALE, NodeStatus.FAILED})
+
+
+def _default_runner(call: dict) -> dict:
+    from core.nodes.dispatch import dispatch_node
+
+    return dispatch_node(call)
 
 
 def _no_provider(call: dict) -> dict:
@@ -157,7 +158,7 @@ class GraphExecutor:
 
     def __init__(self, conn, runner: Optional[Callable[[dict], Any]] = None) -> None:
         self.conn = conn
-        self._runner = runner or _no_provider
+        self._runner = runner or _default_runner
         self.submissions: list[str] = []
 
     def run_node(self, project_id: str, node_id: str, params: Optional[dict] = None) -> dict:
@@ -177,6 +178,8 @@ class GraphExecutor:
         node = graph.node(node_id)
         modality = _modality(node, params)
         if modality not in _NAMED:
+            if node.kind in _STRUCTURAL:
+                return self._run_structural(project_id, graph, node_id, node, params)
             return self._pack(
                 project_id,
                 graph,
@@ -186,6 +189,8 @@ class GraphExecutor:
                 message="node has no billable modality",
             )
         fields = self._fields(node, params, modality)
+        if modality == "video" and not fields["model_id"]:
+            fields["model_id"] = DEFAULT_REFERENCE_VIDEO_MODEL
         if not fields["model_id"]:
             return self._pack(
                 project_id,
@@ -695,19 +700,25 @@ class GraphExecutor:
         request, duration, quantity = self._request(fields)
         del request
         references, versions = self._context(project_id, fields)
-        self._submit(
+        result = self._submit(
             {
                 "project_id": project_id,
                 "node_id": node_id,
+                "kind": graph.node(node_id).kind,
                 "modality": fields.get("modality"),
                 "model_id": fields.get("model_id"),
                 "quantity": quantity,
                 "duration": duration,
+                "shot_duration": fields.get("shot_duration"),
+                "resolution": fields.get("resolution"),
+                "text": fields.get("text") or "",
+                "asset_id": fields.get("asset_id"),
                 "references": references,
                 "versions": versions,
                 "provider_called": False,
             }
         )
+        self._store_result(graph, node_id, result)
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
@@ -739,11 +750,49 @@ class GraphExecutor:
         body["actual"] = recorded.get("actual")
         return body
 
-    def _submit(self, call: dict) -> None:
+    def _submit(self, call: dict) -> Any:
         self.submissions.append(call["node_id"])
         result = self._runner(call)
         if isinstance(result, dict) and result.get("provider_called") is True:
             raise _GateError("node runner called a provider")
+        return result
+
+    def _store_result(self, graph: DependencyGraph, node_id: str, result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        public = {key: value for key, value in result.items() if key != "provider_called"}
+        if public:
+            graph.update_metadata(node_id, result=public)
+
+    def _run_structural(self, project_id: str, graph: DependencyGraph, node_id: str, node, params: dict) -> dict:
+        text = _text(params.get("text")) or _text(node.metadata.get("text") if isinstance(node.metadata, dict) else "")
+        result = self._submit(
+            {
+                "project_id": project_id,
+                "node_id": node_id,
+                "kind": node.kind,
+                "modality": "",
+                "model_id": _text(params.get("model_id") or (node.metadata.get("model_id") if isinstance(node.metadata, dict) else "")),
+                "text": text,
+                "provider_called": False,
+            }
+        )
+        self._to_done(graph, node_id)
+        self._store_result(graph, node_id, result)
+        self._save(project_id, graph)
+        body = self._pack(
+            project_id,
+            graph,
+            node_id,
+            status="done",
+            gate="none",
+            submitted=True,
+            spent=False,
+            call_confirmed=False,
+        )
+        if isinstance(result, dict):
+            body["result"] = {key: value for key, value in result.items() if key != "provider_called"}
+        return body
 
     def _fields(self, node, params: dict, modality: str) -> dict:
         model_id = params.get("model_id") or node.metadata.get("model_id") or ""
@@ -765,15 +814,16 @@ class GraphExecutor:
         return {
             "model_id": model_id,
             "modality": modality,
-            "resolution": params.get("resolution"),
-            "includes_video_input": params.get("includes_video_input"),
+            "resolution": _stored(params, node.metadata, "resolution"),
+            "includes_video_input": _stored(params, node.metadata, "includes_video_input"),
             "asset_count": asset_count,
             "quantity": quantity,
             "unit": params.get("unit"),
             "completion_tokens": _stored(params, node.metadata, "completion_tokens"),
             "input_tokens": _stored(params, node.metadata, "input_tokens"),
             "output_tokens": _stored(params, node.metadata, "output_tokens"),
-            "text": _text(params.get("text")),
+            "text": _text(params.get("text")) or _text(node.metadata.get("text") if isinstance(node.metadata, dict) else ""),
+            "shot_duration": node.metadata.get("shot_duration") if modality == "video" and isinstance(node.metadata, dict) else None,
             "asset_id": asset_id if isinstance(asset_id, str) and asset_id.strip() else None,
             "look_id": look_id if isinstance(look_id, str) and look_id.strip() else None,
             "duration": duration,

@@ -2,8 +2,6 @@
 
 import os
 
-import pytest
-
 from core.agents.character_agent import CharacterDesignerAgent
 from core.agents.reference_agent import ReferenceGeneratorAgent
 from core.agents.video_agent import VideoDirectorAgent
@@ -106,14 +104,6 @@ class TestReferenceVersions:
         assert os.path.basename(agent._next_version_path("sid", "shot_1")) == "shot_1_v3.jpg"
         assert ReferenceGeneratorAgent._list_versions_static("sid", "shot_1") == agent._list_versions("sid", "shot_1")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG reference_agent.py:62 _list_versions_static globs '{shot_id}*.ext', so shot_1 "
-            "includes shot_10_v3.jpg and _next_version_path (line 83) allocates shot_1_v4.jpg. "
-            "Repro: touch shot_1.jpg and shot_10_v3.jpg, then list versions for shot_1."
-        ),
-    )
     def test_sibling_shot_ids_are_not_versions(self, workspace):
         agent = ReferenceGeneratorAgent()
         scene = "code/result/image/sid/Scenes"
@@ -136,14 +126,6 @@ class TestVideoVersions:
         assert VersionFiles.names(agent._list_versions("sid", "seg_1")) == ["seg_1.mp4", "seg_1_v2.mp4"]
         assert os.path.basename(agent._next_version_path("sid", "seg_1")) == "seg_1_v3.mp4"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG video_agent.py:38 _list_versions globs '{segment_id}*.mp4', so seg_1 includes "
-            "seg_10_v4.mp4 and _next_version_path (line 59) allocates seg_1_v5.mp4. "
-            "Repro: touch seg_1.mp4 and seg_10_v4.mp4, then list versions for seg_1."
-        ),
-    )
     def test_sibling_segment_ids_are_not_versions(self, workspace):
         agent = VideoDirectorAgent()
         video = "code/result/video/sid"

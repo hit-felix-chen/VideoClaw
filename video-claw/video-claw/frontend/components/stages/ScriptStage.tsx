@@ -144,11 +144,8 @@ export default function ScriptStage({ state, sessionId, onConfirm, onIntervene, 
 
   const patchScriptArtifact = async (patch: Record<string, any>) => {
     if (!sessionId) throw new Error('缺少会话 ID');
-    const response = await fetch(`/api/project/${sessionId}/artifact/script_generation`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
+    const { saveStageEdits } = await import('@/lib/workflowApi');
+    const response = await saveStageEdits(sessionId, 'script_generation', patch);
     if (!response.ok) throw new Error('保存剧本修改失败');
     return response.json();
   };

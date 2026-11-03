@@ -1,4 +1,2 @@
 # -*- coding: utf-8 -*-
-from .orchestrator import WorkflowEngine, WorkflowStage
-
-__all__ = ["WorkflowEngine", "WorkflowStage"]
+"""Core package. Node execution lives in ``core.executor``."""

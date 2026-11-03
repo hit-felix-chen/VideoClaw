@@ -26,9 +26,6 @@ from api.routers import (
     library_router,
     models_router,
     sandbox_router,
-    sessions_router,
-    stages_router,
-    workflow_router,
 )
 
 
@@ -56,9 +53,6 @@ app.mount("/code", StaticFiles(directory=settings.CODE_DIR), name="code")
 
 app.include_router(health_router)
 app.include_router(files_router)
-app.include_router(workflow_router)
-app.include_router(sessions_router)
-app.include_router(stages_router)
 app.include_router(sandbox_router)
 app.include_router(models_router)
 app.include_router(configuration_router)

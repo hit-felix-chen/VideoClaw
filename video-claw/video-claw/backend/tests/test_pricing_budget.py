@@ -180,10 +180,9 @@ def test_unknown_price_is_not_a_number():
             assert priced["max"] is None
             assert priced["min"] != 0
             assert model_id in priced["unknown_models"]
-        assert PriceBook.quote("wan2.7-image").amount == 0.2
-        assert PriceBook.quote("wan2.7-image").verified is False
+        assert PriceBook.quote("wan2.7-image") is None
         refused = quote(QuoteRequest(model_id="wan2.7-image", modality="image", asset_count=1))
-        assert refused["min"] != 0.2
+        assert refused["min"] is None
         assert UNVERIFIED_FIXTURE in PriceBook.unknown_models()
     finally:
         _remove_fixtures()
