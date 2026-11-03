@@ -2,13 +2,13 @@
 
 节点是资产。边从必须先存在的资产指向依赖它的资产。集只是分组，不是节点。
 
-本提交没有保存或读取图的 HTTP。`GraphStore` 把 `DependencyGraph.to_dict()` 放在项目的 `graph_json`。没有这份快照时：
+`POST /api/v2/projects` 把固定的一集图写进 `project.graph_json`（见 [create_project.md](create_project.md)）。没有「任意替换整张图」的路由。只走 `POST /api/library/projects` 时没有 `nodes`，这时：
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}/run"
 ```
 
-返回 400，`detail` 为 `project has no dependency graph`。不要改去调 `/api/project`。
+返回 400，`detail` 为 `project has no dependency graph`。有图时 `GET /api/v2/projects/{project_id}/status` 返回 `edges`，以及每个节点的 `node_state`。视频节点在 `awaiting_user` 时还有 `quote`；账本停在 `awaiting_user` 时还有 `entry_id` 和 `budget_hold`。`provider_called: false` 会留在节点上。
 
 ## 图节点种类
 
