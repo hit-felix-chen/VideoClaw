@@ -30,6 +30,7 @@ from graph.model import (
     EdgeKind,
     Identifiers,
     Impact,
+    JsonValue,
     NodeStatus,
     StructureReport,
 )
@@ -280,6 +281,26 @@ class DependencyGraph:
 
     def unpin(self, node_id: str) -> None:
         self._nodes[self._require_node(node_id)].pinned = False
+
+    def update_metadata(self, node_id: str, **changes: object) -> AssetNode:
+        """Set metadata keys. A ``None`` value removes that key.
+
+        The graph still does not price a node. Callers store their own JSON.
+        """
+        node_id = self._require_node(node_id)
+        merged = dict(self._nodes[node_id].metadata)
+        for key, value in changes.items():
+            if not isinstance(key, str) or not key.strip():
+                raise GraphError("metadata keys must be non-empty strings")
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = value
+        self._nodes[node_id].metadata = JsonValue.object_copy(
+            merged,
+            path=f"node {node_id!r} metadata",
+        )
+        return self.node(node_id)
 
     def revise(self, node_id: str) -> list[str]:
         """Record that the asset changed and stale downstream outputs. Does not regenerate."""

@@ -1,6 +1,7 @@
 """API routers."""
 
 from .configuration import router as configuration_router
+from .executor import router as executor_router
 from .files import router as files_router
 from .health import router as health_router
 from .library import router as library_router
@@ -20,4 +21,5 @@ __all__ = [
     "models_router",
     "configuration_router",
     "library_router",
+    "executor_router",
 ]
