@@ -26,7 +26,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/budget/{entry_i
   -d '{"budget_cap": 200}'
 ```
 
-新上限仍盖不住这笔报价：旧上限不变，调用仍不执行。够用：改项目上限，同一笔报价继续（`confirmed` true），视频会接着提交。文案是「已上调预算上限，可以继续。」
+新上限仍盖不住这笔报价：旧上限不变，调用仍不执行。响应没有 `allowed`，`gate` 为 `budget`，`over_budget` 为 true。够用：改项目上限，同一笔报价继续（`confirmed` true），视频会接着提交。文案是「已上调预算上限，可以继续。」视频节点在没有注入适配器且密钥为空时，raise 先 409，不入账。
 
 节点上已有 `submit_dispatched` 或 `vendor_task_id` 时，raise 会拒绝，避免第二笔生成。例外是 `force_new` 因预算停住的那一次（见 confirm_video.md）。
 

@@ -38,7 +38,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/looks/{look_id}
   -d '{"confirm_token": "<token>"}'
 ```
 
-按列表跑 `run_node`。视频节点会在这批里再 `confirm`（授权并入账）。kind `character`、`scene`、`setting`、`keyframe`、`image` 以及 VLM、TTS 在 `run` 里直接按 `quote.max` 入账，`provider_called` 为 false 也记 `spent`。第一个还在等用户的节点会停下，后面的节点这次不占用、也不花。某个节点占用之后失败：释放未结算报价，把失败记在已用掉的令牌上，这次 HTTP 是 400。再拿同一个令牌 confirm，若上面有结果，则原样返回（200），不再花第二次。
+这两条不走视频 HTTP 的无密钥 409。无密钥时批里的视频仍会入账，`provider_called` 为 false，界面可显示「已记账·未调用厂商」。按列表跑 `run_node`。视频节点会在这批里再 `confirm`（授权并入账）。kind `character`、`scene`、`setting`、`keyframe`、`image` 以及 VLM、TTS 在 `run` 里直接按 `quote.max` 入账，`provider_called` 为 false 也记 `spent`。第一个还在等用户的节点会停下，后面的节点这次不占用、也不花。某个节点占用之后失败：释放未结算报价，把失败记在已用掉的令牌上，这次 HTTP 是 400。再拿同一个令牌 confirm，若上面有结果，则原样返回（200），不再花第二次。
 
 令牌过期、属于别的项目、对不上这个形象、或下游集合已经变了，都会 400，且不写账本。
 

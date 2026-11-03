@@ -6,7 +6,7 @@
 
 当前版本无认证。CORS 允许任意来源。
 
-图执行器上有方法、但本提交没有对应 HTTP 的操作，见文末「仅 GraphExecutor、无 HTTP」。
+库路由和执行器路由都用 `@bind_db`：每个请求在处理线程里 `Database.connect` 打开 `videoclaw.db`，返回前关闭。`get_library_connection` 本身不打开 SQLite，只让测试指定数据目录。进程启动时 `api/app.py` 的 lifespan 调用一次 `GraphExecutor.recover_stale_submit_claims`。没有超过 30 分钟的 `running` 视频认领时，这次调用什么都不改；已经回收过的认领不会被第二次启动再提交。
 
 ---
 
@@ -17,8 +17,10 @@
 | 库路由 `library.py` | 404 | 项目、资产、形象、形象版本、图片、片段引用不存在 |
 | 库路由 | 409 | 形象父级成环（`LookCycleError`） |
 | 库路由 | 400 | 其他 `StorageError`（种类非法、缺字段、引用不匹配等） |
-| 执行器路由 `executor.py` | 404 | 项目、图节点、形象不存在 |
-| 执行器路由 | 400 | `GraphError` 或 `StorageError`（含门禁 `_GateError` 的说明文字） |
+| 执行器路由 `executor.py` | 404 | 项目、图节点、形象不存在。删除一个已经不存在的项目也是 404 |
+| 执行器路由 | 400 | `GraphError` 或 `StorageError`（含门禁 `_GateError`）。`confirm` 的查询参数或 JSON 里只要出现 `force_new`（包括 `false`）也是 400，`detail` 为 `force_new is only valid on retry_video_submit` |
+| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（都已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新` |
+| 执行器路由 | 422 | `confirm` 或 `retry_video_submit` 的 JSON 把 `force_new` 设成 `null`。字段类型是 `bool`，Pydantic 拒绝 `null`，请求进不了处理函数 |
 | 上传 | 400 | 扩展名不在允许列表 |
 | 上传 | 500 | 落盘失败 |
 | FastAPI | 422 | 查询参数或 JSON 体不符合模型（例如 `budget_cap` 缺失、`media_type` 不在枚举内） |
@@ -116,7 +118,7 @@
 | GET | `/api/library/projects` | 无 | `{"projects": [项目记录]}` |
 | GET | `/api/library/projects/{project_id}` | 无 | 项目记录 |
 
-没有更新或删除项目的 HTTP。`ProjectStore.update` / `delete` 只在进程内。上调预算走执行器的 raise，不是改项目的通用接口。
+这三条不写依赖图。带固定一集图的创建、删除、停止和改模型在下一节。上调预算仍走执行器的 raise，不是改项目名称的接口。没有改项目名称的 HTTP。
 
 ### 资产
 
@@ -193,7 +195,7 @@
 
 ## 图与节点状态
 
-图快照存在该项目的 `graph_json`（`GraphStore`）。本提交没有保存或读取图的 HTTP。`run_node` 发现没有 `nodes` 时返回 400，`detail` 为 `project has no dependency graph`。
+图快照存在该项目的 `graph_json`（`GraphStore`）。`POST /api/v2/projects` 会写入下面那份固定的一集图。没有通用的「替换整张图」路由。只通过 `POST /api/library/projects` 建出来的项目没有 `nodes`，`run_node` 仍返回 400，`detail` 为 `project has no dependency graph`。`GET /api/v2/projects/{project_id}/status` 在有图时返回 `edges`。
 
 图节点种类（已知值，也接受其他非空字符串）：`script`、`character`、`scene`、`shot_segment`、`final_video`、`previz`、`keyframe`、`draft_video`。
 
@@ -219,7 +221,50 @@
 
 ## 执行器
 
-路由都在 `api/routers/executor.py`，调用 `GraphExecutor`。视频的供应商提交发生在 `confirm` 已经 `authorize` 之后；只有注入了适配器，或该模型的供应商密钥已配置（`ark` / `dashscope` / `kling` 的 `api_key` 非空）时才会真正 POST。
+路由都在 `api/routers/executor.py`，调用 `GraphExecutor`。HTTP 上的视频 `confirm`、`retry_video_submit` 和 `raise` 在授权之前先看 `_video_submitter`：没有注入适配器，且该模型供应商（`ark` / `dashscope` / `kling`）的 `api_key` 为空时，直接 409，不调用 `confirm`，不入账。进程里直接调用 `GraphExecutor.confirm` 没有这道 409，无适配器时仍会按 `quote.max` 入账。真正的厂商 POST 只发生在授权之后，并且要有注入的适配器或已配置的密钥。
+
+### `POST /api/v2/projects`
+
+创建项目并写入固定的一集图（`core/episode.py` 的 `seed_episode_graph`，`episode_id` 恒为 `ep1`）。请求体 `EpisodeProjectCreate`：`name` 必填；可选 `budget_cap`、`idea`、`llm_model`、`image_model`、`video_model`、`tts_model`。
+
+图里六个节点，边是 `script → storyboard`，`storyboard → character`，`storyboard → reference`，`character → video`，`reference → video`，`video → tts`：
+
+| id | kind | 写入的模型字段 |
+|----|------|----------------|
+| `script` | `script` | `llm_model`，正文是 `idea` |
+| `storyboard` | `storyboard` | 同上 |
+| `character` | `character` | `image_model`，`resolution` 为 `720p` |
+| `reference` | `keyframe` | 同上 |
+| `video` | `shot_segment` | `video_model`，`resolution` `720p`，`includes_video_input` false，`completion_tokens` 1000000，`shot_duration` 6 |
+| `tts` | `tts` | `tts_model`，`quantity` 10000，`unit` `per_10k_characters` |
+
+空字符串不当作模型 id。播种失败会删掉刚插入的项目行。响应：`project`（项目记录）、`episode_id`（`ep1`）、`graph`（存进去的 JSON）、`nodes`、`edges`。
+
+前端 `createEpisode`（`frontend/lib/episodeApi.ts`）只提交非空的这几个字段。
+
+### `DELETE /api/v2/projects/{project_id}`
+
+没有请求体。图上任一节点 `status` 为 `running`，或 metadata 里 `submit_dispatched` 为真，或 `vendor_task_id` 是非空字符串，或 `node_state.status` 为 `running`，则 409，`detail` 为 `项目有尚未结束的提交，不能删除`，项目还在。否则 `ProjectStore.delete`。成功：`{"status": "deleted", "id": "<project_id>"}`。项目本就不存在：404。
+
+### `POST /api/v2/projects/{project_id}/stop`
+
+没有请求体。只停图上 `running`、且还没有 `submit_dispatched` 或 `vendor_task_id` 的节点。同一事务里把该节点改成 `failed`，metadata `stop_reason` 写成 `用户停止`，并把该节点仍为 `quoted`、尚未有 `actual_amount` 的账本行改成 `skipped`。已是 `spent` 的行不动。
+
+已经落库 `submit_dispatched` 或任务号的节点留在 `running`，原因是 `生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。` 这条不能取消厂商调用。一个都没停成、但有被拒绝的节点：409，`detail` 是 `没有节点被停止` 再加上这些原因。有节点被停：200，体为 `project_id`、`stopped`（节点 id 列表）、`refused`（`node_id` 与 `reason`）、`message`。当前没有 `running` 节点：200，`stopped` 与 `refused` 为空，`message` 含 `当前没有正在运行的节点`。
+
+### `PATCH /api/v2/projects/{project_id}/models`
+
+只处理请求里出现过的字段。角色对应的 kind：`llm_model` → `script` / `storyboard` / `previz`；`image_model` → `character` / `scene` / `setting` / `keyframe` / `image`；`video_model` → 视频 kind；`tts_model` → `tts`。可选 `nodes`：`{节点 id: 模型 id}`，覆盖到该节点。空字符串 400。`ModelRegistry.get` 找不到的 id：400，`detail` 含 `未知模型`。
+
+`running`、`awaiting_user`，或仍有 `submit_dispatched` / 非空 `vendor_task_id` 的节点不改，放进 `blocked`，原因是 `节点正在运行、等待确认，或仍保留着厂商任务，模型没有更换`。一个节点都没写上时 400。写上了则 200：`project_id`、`updated`（`node_id` 与 `model_id`）、`blocked`、`unapplied`（图里没有对应 kind 的角色名）。
+
+### `PATCH /api/v2/projects/{project_id}/nodes/{node_id}/prompt`
+
+请求体 `{"text": ""}`，`text` 必填字符串。节点正在运行（`node_state` 或图状态为 `running`）则 400：`节点正在运行，修改没有写入`。否则写入 metadata `text`；若已有 `pending_call`，里面的 `text` 一并改掉。响应：`project_id`，`node_id`，`text`，`status`。
+
+### `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`
+
+请求体可省略，省略等于 `force_new` false：续接已有 `vendor_task_id` 或 `result_obtained`，花原来的报价，不新开 POST。`RetryVideoSubmitRequest.force_new` 默认 false。只有 JSON `true`，或 Pydantic 当成 true 的字符串 `"true"`，才会 `force_new=True`：先释放旧报价，重新 `authorize`，成功之后才丢掉任务 id，然后才新开 POST。`"false"` 被收成 false，仍是续接。`null` 在校验阶段就是 422，到不了这个默认值。视频节点没有可用适配器时，和 confirm 一样先 409，不入账。
 
 节点运行请求体 `NodeRunRequest`（可省略，省略等于 `{}`）：
 
@@ -274,7 +319,9 @@
 
 ### `POST /api/v2/projects/{project_id}/nodes/{node_id}/confirm`
 
-无请求体。接受挂起的视频报价。这是该次调用的第一次账本写入。
+查询参数 `force_new` 或 JSON 字段 `force_new` 只要出现就 400，包括 `false`、查询串 `force_new=false` 和 `force_new=true`。省略该字段才是普通确认（前端 `confirmRequest()` 送的是 `{}`）。JSON `{"force_new": null}` 目前是 422，不是 400。
+
+没有 `force_new` 时：先对视频节点做无密钥 409（见上，不入账）。通过之后才 `GraphExecutor.confirm`。这是该次 HTTP 调用的第一次账本写入。结算不要求先拿到 URL：`record_actual` 用的是已保留的 `quote.max`。有 URL 时会先把 `result_obtained` 单独提交，但没有 URL 也会入账并把节点标 `done`（进程内、无适配器的 `confirm` 就是这条）。HTTP 路由在密钥为空时不会走到这一步。
 
 认领在授权之前：`awaiting_user`（或预算上调留下的 `node_state.status = ready`）变成 `running`。并发的第二个 confirm 立刻 400，不会授权也不会提交。
 
@@ -312,7 +359,7 @@
 
 ### `GET /api/v2/projects/{project_id}/status`
 
-无图或图里没有 `nodes` 时，`nodes`、`awaiting_user`、`executable`、`stale` 四个数组都是空的。预算和账本仍返回。
+无图或图里没有 `nodes` 时，`nodes`、`edges`、`awaiting_user`、`executable`、`stale` 都是空数组。预算和账本仍返回。有图时 `edges` 是快照里的边。每个节点除了图字段，还有 `node_state`（没有行则是 null）。`provider_called` 只在 metadata 或 `metadata.result` 里存了 false 时出现在节点上，并保持 false；成功打到厂商时，当次响应可以是 true，但 status 不会把 true 写回这个字段。节点为 `awaiting_user` 且是视频时，附上重新算出的 `quote` 和 `duration`。该节点有一条 `awaiting_user` 账本行时，再附上 `entry_id` 和 `budget_hold: true`。
 
 ```json
 {
@@ -368,9 +415,9 @@
 
 `confirm` 在 `adapter.submit` 之前把节点 metadata `submit_dispatched` 写成 true 并提交事务。供应商返回任务 id 时写入 `vendor_task_id`，标记保持 true。拿到结果 URL 后先单独提交 `result_obtained`（同时保持 `submit_dispatched`），再在同一事务里把账本记为 `spent` 并把节点标 `done`。本地文件在 `code/result/video/<project_id>/<node_id>.mp4`，URL 记在 `result_id`。
 
-供应商密钥未配置、也没有注入适配器时，`_video_submitter` 在写标记之前就返回。不 POST，不置 `submit_dispatched`，然后 `_finish` 仍把已保留报价按 `quote.max` 记成 `spent`，节点 `done`，`provider_called` 为 false。准备好的请求（仍是资产 id，不是文件）存在节点上。这不是「清标记」：标记本来就没写上。
+HTTP 的 `confirm` / `retry_video_submit` / `raise` 在密钥为空且没有注入适配器时 409，不入账，也不写 `submit_dispatched`。进程内直接 `GraphExecutor.confirm` 没有这道拒绝：`_video_submitter` 在写标记之前返回，不 POST，然后 `_finish` 仍按 `quote.max` 入账，节点 `done`，`provider_called` 为 false。
 
-标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`（最后这句是适配器已经进入 `submit` 又发现没有密钥；常见的缺密钥路径不进入 `submit`）。这时报价改为 `skipped`，节点回到 `awaiting_user`，不是再花一笔。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。
+标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。最后这句只属于已经进入 `submit` 的适配器（例如注入了适配器，客户端又发现没有密钥）。HTTP 缺密钥路径不进入 `submit`，所以不是清标记。清掉时报价改为 `skipped`，节点回到 `awaiting_user`。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。`submit_dispatched` 已经落库时，`stop` 也拒绝这个节点，不能取消厂商调用。
 
 镜头时长：`shot_duration` 取节点 metadata。模型 `duration.verified` 不为 true 则不发送时长。整数且落在该模型 min..max 内则用该秒数，否则若 `allow_auto` 则发送 -1。Seedance 2.5 是 4 到 30 秒，区间外为 -1。已核实的其他模型区间：
 
@@ -388,18 +435,25 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 
 ---
 
-## 仅 GraphExecutor、无 HTTP
+## 已知遗留
 
-本提交的路由器没有这些入口。不要对它们发明路径。`r9/frontend-v2` 可能会给 `retry_video_submit` 补路由；在那之前这里没有。
+这些是当前代码的行为，不是还没写上的路由。
+
+- `POST .../looks/{look_id}/impact/confirm` 和 `POST .../impact/regenerate` 不走无密钥 409。批里的视频节点仍会 `authorize` 并按 `quote.max` 入账，`provider_called` 为 false。前端在节点 `done` 且 `provider_called === false`（节点上或 `metadata.result` 上）时显示 `已记账·未调用厂商`（`episodeFlow.ts` 的 `OFFLINE_BADGE`）。
+- 进程内直接 `GraphExecutor.confirm` 同样没有 409。无注入适配器时按 `quote.max` 入账。
+- `POST /api/sandbox/video` 直接调 `VideoClient`，不经过项目预算，也不看 4–30 秒的图规则。
+- `POST /api/v2/projects` 的图永远是一集 `ep1` 和上面那六条边。没有按用户集数生成图的参数。
+- `submit_dispatched` 落库之后，`stop` 仍拒绝该节点，不能取消已经可能发给厂商的调用。
+
+## 无 HTTP 的存储调用
 
 | 调用 | 行为 |
 |------|------|
-| `GraphExecutor.retry_video_submit(project_id, node_id, force_new=False)` | 手动重试可能已经到达供应商的提交。不先清标记。有 `vendor_task_id` 则再轮询并花原来的报价，过期的 `running` 认领也包括在内。有 `result_obtained` URL 则直接结算，不再 POST。`force_new=True` 先释放旧报价，新报价授权成功之后才丢掉任务 id，然后才 POST。新报价超预算时 id 和标记都留着，`raise_budget` 可以继续这一次。默认 `force_new` 为 false。普通 confirm 既不恢复也不新开。 |
-| `GraphExecutor.recover_stale_submit_claims(conn)` | 把超过 30 分钟仍为 `running` 的视频认领收回。无标记的：跳过未结算报价并释放认领。有标记的：停在 `awaiting_user`，不再次提交。`api_server.py` 的启动过程没有调用它。下一次 `confirm` 在 TTL 之后会做同样的回收。未超过 TTL 的认领不动。 |
-| `GraphStore.save` / `GraphStore.load` | 读写 `project.graph_json`。无 HTTP。 |
-| `ProjectStore.update` / `ProjectStore.delete` | 无 HTTP。 |
+| `GraphExecutor.recover_stale_submit_claims(conn)` | 把超过 30 分钟仍为 `running` 的视频认领收回。无标记的：跳过未结算报价并释放认领。有标记的：停回 `awaiting_user`，不再次提交。进程启动时调用一次。没有可回收行时返回空列表，再启动一次也是空操作。未超过 TTL 的认领不动。下一次 `confirm` 在 TTL 之后也会做同样的回收。 |
+| `GraphStore.save` / `load` | 除了 `POST /api/v2/projects` 写入那份固定图，以及执行器改节点时回写快照，没有单独的读写图路由。 |
+| `ProjectStore.update` | 无通用 HTTP。预算 raise 会改 `budget_cap`。 |
 
-`force_new=True` 传给普通 `confirm` 会 400：`force_new is only valid on retry_video_submit`。
+`retry_video_submit` 已有 HTTP，见上文。普通 confirm 出现 `force_new` 是 400，不是再转去重试。
 
 ---
 

@@ -1,6 +1,6 @@
 ﻿---
 name: video-claw
-description: 本地资产图驱动的 AI 视频生成。项目、资产、形象和片段引用在资产库；节点由 GraphExecutor.run_node 执行。只有视频逐次确认，然后才 ProjectBudget.authorize 并写入账本。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图。
+description: 本地资产图驱动的 AI 视频生成。POST /api/v2/projects 写入固定一集图。只有视频逐次确认后才 authorize 入账；character、scene、setting、keyframe、image 以及 vlm、tts 在 run 里按 quote.max 入账，无需确认。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图。
 license: MIT License
 metadata:
   author: Lychee
@@ -69,7 +69,7 @@ video-claw/                         ← skill 根目录
 3. 查密钥。读 `video-claw/backend/config.yaml` 的 `api_providers.*.api_key`。DeepSeek 用 `api_providers.deepseek.api_key`，通义用 `api_providers.dashscope.api_key`，方舟 / Seedance 用 `api_providers.ark.api_key`，可灵用 `api_providers.kling.api_key`（不是 access_key + secret_key）。缺密钥就停下来告诉用户缺哪一家、配置文件位置，等用户写上再继续。
 4. 按 create_project.md 创建项目。`budget_cap` 可空，空表示不封顶。
 5. 资产、形象、图片走资产库。片段引用按 segment_refs.md。
-6. 图必须已经在该项目的 `graph_json` 里。本提交没有写入图的 HTTP。没有图时 `run` 会 400：`project has no dependency graph`。不要改调 `/api/project`。
+6. 要一集可跑的图，用 `POST /api/v2/projects`（见 create_project.md）。`POST /api/library/projects` 只建空项目，没有图时 `run` 仍是 400：`project has no dependency graph`。
 7. 对可执行节点 `POST /api/v2/projects/{project_id}/nodes/{node_id}/run`。
 8. 只有视频停下来等用户确认报价，再 `confirm`。kind `character`、`scene`、`setting`、`keyframe`、`image` 以及 VLM、TTS 在 `run` 里直接按 `quote.max` 入账（`provider_called` 为 false 也记 `spent`）。`script`、`storyboard`、`previz` 不入账。不传 `modality` 时，`prop` 和 `final_cut` 是 `unsupported`。
 9. `over_budget` 或 `gate` 为 `budget` 时，把暂停文案原文给用户（三个数字在有币种时各带 ` {currency}` 后缀）。上调走 raise，放弃走 decline。不要自己改上限。raise 不够时响应里没有 `allowed`，而是 `gate` 为 `budget`、`over_budget` 为 true。
@@ -96,11 +96,13 @@ Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 aut
 
 ## 视频提交失败时
 
-供应商密钥没配、也没有注入适配器时：不 POST，不写 `submit_dispatched`，已保留的报价仍按 `quote.max` 记 `spent`，节点 `done`。这不是清标记。
+HTTP 的视频 `confirm`、`retry_video_submit` 和 `raise` 在没有注入适配器且供应商密钥为空时是 409：`未配置视频厂商密钥，不会提交也不会入账`。不写标记，也不入账。进程内直接 `GraphExecutor.confirm` 没有这道 409，无适配器时仍按 `quote.max` 入账。
 
-普通 `confirm` 在 `submit_dispatched` 已经写上时不会再次 POST。标记只有在 `submit` 已经开始、随后又被判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`。这时报价改为 `skipped`。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
+普通 `confirm` 在 `submit_dispatched` 已经写上时不会再次 POST。标记只有在 `submit` 已经开始、随后又被判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是上面的 HTTP 409。这时报价改为 `skipped`。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
 
-手动重试是 `GraphExecutor.retry_video_submit`。本提交没有这条 HTTP。`r9/frontend-v2` 可能会加路由；加之前不要猜路径。`force_new=True` 只属于这次重试：先释放旧报价，新报价授权成功后才丢掉任务 id，然后才 POST。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。细节见 confirm_video.md。
+手动重试是 `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`。省略请求体或 `force_new` 为 false（含字符串 `"false"`）是续接。只有 JSON `true` 或 Pydantic 当成 true 的 `"true"` 才释放旧报价并重新授权、然后新开。`confirm` 里出现 `force_new` 一律 400；JSON `null` 目前是 422。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。进程启动会回收过期认领；没有过期行时再启动一次是空操作。细节见 confirm_video.md。
+
+`impact/confirm` 和 `impact/regenerate` 在无密钥时仍会入账，界面可显示「已记账·未调用厂商」。`POST /api/sandbox/video` 不走项目预算。一集图是固定的 `ep1`。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。
 
 ---
 
