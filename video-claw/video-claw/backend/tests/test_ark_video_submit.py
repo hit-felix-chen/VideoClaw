@@ -516,14 +516,30 @@ def test_concurrent_confirms_submit_and_spend_once(conn):
     assert not any(row["status"] == QUOTED for row in rows)
 
 
-def _stamp_running(conn, project_id, *, dispatched=False):
+def _leave_quoted(conn, project_id, amount=70.0):
+    """A reserved quote left behind by a confirm that was killed mid-submit."""
+    return LedgerStore.add(
+        conn,
+        project_id,
+        kind="video",
+        status=QUOTED,
+        model=SEEDANCE,
+        node_id="video",
+        quote_amount=amount,
+        currency="CNY",
+    )
+
+
+def _stamp_running(conn, project_id, *, dispatched=False, vendor_task_id=None):
     from graph.model import NodeStatus
 
     graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
     if graph.node("video").status != NodeStatus.RUNNING:
         graph.transition("video", NodeStatus.RUNNING)
-    if dispatched:
+    if dispatched or vendor_task_id:
         graph.update_metadata("video", submit_dispatched=True)
+    if vendor_task_id:
+        graph.update_metadata("video", vendor_task_id=vendor_task_id)
     GraphStore.save(conn, project_id, graph.to_dict())
     conn.execute(
         """
@@ -538,12 +554,17 @@ def test_stale_submit_claim_can_be_confirmed_again(conn):
     project_id, hero = _ready_video(conn)
     _portrait(conn, hero["id"])
     GraphExecutor(conn).run_node(project_id, "video")
+    quoted = _leave_quoted(conn, project_id)
     _stamp_running(conn, project_id, dispatched=True)
     released = GraphExecutor.recover_stale_submit_claims(conn)
     assert released == ["video"]
     assert _status(conn, project_id) == "awaiting_user"
     assert _metadata(conn, project_id)["submit_dispatched"] is True
     assert "may have reached the vendor" in _metadata(conn, project_id)["submit_error"]
+    still_quoted = _video_rows(conn, project_id)
+    assert len(still_quoted) == 1
+    assert still_quoted[0]["id"] == quoted["id"]
+    assert still_quoted[0]["status"] == QUOTED
 
     adapter = RecordingAdapter()
     with pytest.raises(StorageError) as blocked:
@@ -558,8 +579,11 @@ def test_stale_submit_claim_can_be_confirmed_again(conn):
     assert done["provider_called"] is True
     assert done["status"] == "done"
     assert _metadata(conn, project_id).get("submit_dispatched") is None
-    spent = [row for row in _video_rows(conn, project_id) if row["status"] == SPENT]
+    rows = _video_rows(conn, project_id)
+    spent = [row for row in rows if row["status"] == SPENT]
     assert len(spent) == 1
+    assert spent[0]["id"] == quoted["id"]
+    assert not any(row["status"] == QUOTED for row in rows)
 
 
 def test_fresh_submit_claim_is_rejected(conn):
@@ -1372,3 +1396,149 @@ def test_raise_budget_refuses_when_the_marker_is_set(conn):
     assert _metadata(conn, project_id)["submit_dispatched"] is True
     assert _metadata(conn, project_id)["vendor_task_id"] == "task-budget"
     assert _video_rows(conn, project_id)[0]["status"] == AWAITING_USER
+
+
+class _NewPostAdapter:
+    """Records each submit. A missing task id is a new POST."""
+
+    def __init__(self):
+        self.posts = []
+
+    def submit(self, spec, params, *, transport=None):
+        task_id = params.get("vendor_task_id")
+        self.posts.append(task_id)
+        on_task = params.get("on_task")
+        if not task_id and callable(on_task):
+            on_task("task-new")
+        return RESULT_URL
+
+
+def _stale_quoted_submit(conn):
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    quoted = _leave_quoted(conn, project_id)
+    _stamp_running(conn, project_id, vendor_task_id="task-old")
+    return project_id, quoted
+
+
+def test_force_new_on_a_stale_quote_authorizes_before_the_post(conn, monkeypatch):
+    from models.middle.budget import ProjectBudget
+
+    project_id, quoted = _stale_quoted_submit(conn)
+    adapter = _NewPostAdapter()
+    real = ProjectBudget.authorize
+
+    def wrapped(connection, project, request, **kwargs):
+        assert adapter.posts == []
+        return real(connection, project, request, **kwargs)
+
+    monkeypatch.setattr(ProjectBudget, "authorize", wrapped)
+    done = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(
+        project_id,
+        "video",
+        force_new=True,
+    )
+    assert adapter.posts == [None]
+    assert done["status"] == "done"
+    assert done["spent"] is True
+    assert "manual check needed" not in done["message"]
+    rows = _video_rows(conn, project_id)
+    spent = [row for row in rows if row["status"] == SPENT]
+    skipped = [row for row in rows if row["status"] == SKIPPED]
+    assert len(spent) == 1
+    assert spent[0]["actual_amount"] == 70.0
+    assert skipped[0]["id"] == quoted["id"]
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
+    assert _metadata(conn, project_id).get("vendor_task_id") is None
+
+
+def test_force_new_budget_pause_keeps_the_task_until_the_cap_is_raised(conn):
+    project_id, _quoted = _stale_quoted_submit(conn)
+    ProjectStore.update(conn, project_id, budget_cap=10)
+    adapter = _NewPostAdapter()
+    paused = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(
+        project_id,
+        "video",
+        force_new=True,
+    )
+    assert paused["gate"] == "budget"
+    assert adapter.posts == []
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["vendor_task_id"] == "task-old"
+    assert meta["force_new_pending"] is True
+    assert _status(conn, project_id) == "awaiting_user"
+    assert not any(row["status"] == SPENT for row in _video_rows(conn, project_id))
+    done = GraphExecutor(conn, video_adapter=adapter).raise_budget(
+        project_id,
+        paused["entry_id"],
+        500,
+    )
+    assert done["status"] == "done"
+    assert done["spent"] is True
+    assert adapter.posts == [None]
+    spent = [row for row in _video_rows(conn, project_id) if row["status"] == SPENT]
+    assert len(spent) == 1
+    assert spent[0]["actual_amount"] == 70.0
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
+
+
+def test_stale_retry_without_force_new_spends_the_original_quote(conn, monkeypatch):
+    from models.middle.budget import ProjectBudget
+
+    project_id, quoted = _stale_quoted_submit(conn)
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("resume must not authorize a second quote")
+
+    monkeypatch.setattr(ProjectBudget, "authorize", explode)
+    adapter = _NewPostAdapter()
+    done = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(project_id, "video")
+    assert done["status"] == "done"
+    assert done["spent"] is True
+    assert adapter.posts == ["task-old"]
+    rows = _video_rows(conn, project_id)
+    assert len(rows) == 1
+    assert rows[0]["id"] == quoted["id"]
+    assert rows[0]["status"] == SPENT
+    assert rows[0]["actual_amount"] == 70.0
+
+
+def test_raise_budget_refuses_a_task_id_without_the_marker(conn):
+    project_id, _hero = _ready_video(conn, cap=10)
+    GraphExecutor(conn).run_node(project_id, "video")
+    held = GraphExecutor(conn).confirm(project_id, "video")
+    assert held["gate"] == "budget"
+    document = GraphStore.load(conn, project_id)
+    for node in document["nodes"]:
+        if node["id"] == "video":
+            node["metadata"]["vendor_task_id"] = "task-only"
+    GraphStore.save(conn, project_id, document)
+    with pytest.raises(StorageError) as refused:
+        GraphExecutor(conn).raise_budget(project_id, held["entry_id"], 500)
+    assert "retry_video_submit" in str(refused.value)
+    assert _metadata(conn, project_id)["vendor_task_id"] == "task-only"
+    assert _video_rows(conn, project_id)[0]["status"] == AWAITING_USER
+
+
+def test_seedance_error_body_redacts_the_api_key(conn, monkeypatch, caplog):
+    import logging
+
+    import models.video_seedance as video_seedance
+
+    monkeypatch.setattr(Config, "ARK_API_KEY", "super-secret-key")
+
+    def fake_post(_url, **_kwargs):
+        return _Http({"error": "rejected super-secret-key"}, status=400)
+
+    monkeypatch.setattr(video_seedance.requests, "post", fake_post)
+    client = video_seedance.SeedanceVideoClient(
+        api_key="super-secret-key",
+        base_url="https://example.invalid",
+    )
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(Exception):
+            client._submit_task("hello", None, SEEDANCE, 5)
+    assert "super-secret-key" not in caplog.text
+    assert "***" in caplog.text

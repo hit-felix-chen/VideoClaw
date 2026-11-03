@@ -55,9 +55,13 @@ download errors, vendor failed or expired, and every HTTP 4xx keep both.
 A 4xx body that contains an id stores that id. The quote is skipped, the
 node returns to ``awaiting_user``, and a plain confirm does not POST.
 ``retry_video_submit`` claims without clearing the marker. It resumes a
-stored task id or settles a stored result URL. ``force_new=True`` is
-required before a failed or expired task can be created again. A result
-URL is committed on its own before the spent-and-done transaction.
+stored task id or settles a stored result URL, including a stale running
+claim, and spends the original quote. ``force_new=True`` first releases
+that quote and authorizes a new one. The task id is dropped only after
+that authorization, and only then does a new POST run. If the new quote
+does not fit the budget, the id and marker stay and ``raise_budget`` may
+continue that attempt. A result URL is committed on its own before the
+spent-and-done transaction.
 After ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes), recovery and the
 next ``confirm`` do not submit again. A stale ``running`` row with no
 marker died before the vendor call and can be claimed again.
@@ -67,8 +71,9 @@ The Seedance client stops the whole submit at 20 minutes
 cap of 120 rounds with a 30-second HTTP timeout and a 5-second pause
 would otherwise run about 74 minutes and outlive the claim.
 A fresh ``running`` claim is rejected so a live submit is not double-spent.
-``raise_budget`` refuses while ``submit_dispatched`` is set, and otherwise
-claims the same way. ``node_state`` ``ready`` left by a
+``raise_budget`` refuses while ``submit_dispatched`` or ``vendor_task_id``
+is set, unless this pause is the budget exit of ``force_new``. Otherwise
+it claims the same way. ``node_state`` ``ready`` left by a
 kill after the cap is raised is claimable, and that confirm spends the
 quote already reserved instead of saying the node is not awaiting.
 
@@ -362,9 +367,29 @@ def _batch_provider_called(nodes: Any) -> bool:
     return any(bool(item.get("provider_called")) for item in nodes if isinstance(item, dict))
 
 
-def _dispatched(node) -> bool:
+def _metadata(node) -> dict:
     metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
-    return bool(metadata.get(SUBMIT_DISPATCHED))
+    return metadata
+
+
+def _dispatched(node) -> bool:
+    return bool(_metadata(node).get(SUBMIT_DISPATCHED))
+
+
+def _vendor_task_id(node) -> Optional[str]:
+    task_id = _metadata(node).get("vendor_task_id")
+    if isinstance(task_id, str) and task_id.strip():
+        return task_id.strip()
+    return None
+
+
+def _vendor_hold(node) -> bool:
+    """True when a later budget change must not start a second generation."""
+    return _dispatched(node) or _vendor_task_id(node) is not None
+
+
+def _force_new_pending(node) -> bool:
+    return bool(_metadata(node).get("force_new_pending"))
 
 
 def _request_was_not_sent(exc: BaseException) -> bool:
@@ -621,7 +646,8 @@ class GraphExecutor:
         returns the node to ``awaiting_user``. A plain confirm never POSTs
         while ``submit_dispatched`` is set. ``retry=True`` claims without
         clearing that marker. ``force_new`` is honored only together with
-        retry, and drops ``vendor_task_id`` inside the claim transaction.
+        retry. It releases the old quote, authorizes a new one, and drops
+        ``vendor_task_id`` only after that quote exists.
         """
         if force_new and not retry:
             raise _GateError("force_new is only valid on retry_video_submit")
@@ -645,10 +671,13 @@ class GraphExecutor:
         try:
             quoted = self._open_quoted(project_id, node_id)
             state = self._node_state_row(project_id, node_id)
-            # A quote left reserved by a failed spend is the same row. Do not
-            # authorize a second one. ``ready`` is the raise_budget case.
-            if quoted is not None and (
-                state is None or state["status"] in {"ready", "awaiting_user", "running"}
+            # A quote left reserved by the same attempt is settled as-is.
+            # ``force_new`` must not reuse it: that request is a new one.
+            # ``ready`` is the raise_budget case.
+            if (
+                not self._force_new
+                and quoted is not None
+                and (state is None or state["status"] in {"ready", "awaiting_user", "running"})
             ):
                 self._acquire_submit_claim(project_id, graph, node_id)
                 try:
@@ -665,6 +694,11 @@ class GraphExecutor:
                     raise
             self._acquire_submit_claim(project_id, graph, node_id)
             try:
+                if self._force_new:
+                    # The old reservation paid for the previous task. Release
+                    # it before the new authorization, and do not drop the
+                    # task id until that authorization succeeds.
+                    self._release_quoted_reservation(project_id, node_id)
                 request, duration, _quantity = self._request(fields)
                 view = ProjectBudget.authorize(
                     self.conn,
@@ -677,6 +711,10 @@ class GraphExecutor:
                 if not view["allowed"]:
                     # authorize may already have moved node_state off the claim
                     # stamp. Write the graph back from this in-memory node.
+                    # The task id and marker stay so a rejected budget cannot
+                    # forget a generation that already exists.
+                    if self._force_new and view.get("status") == AWAITING_USER:
+                        graph.update_metadata(node_id, force_new_pending=True)
                     self._restore_awaiting(project_id, graph, node_id)
                     return self._from_budget(
                         project_id,
@@ -688,6 +726,8 @@ class GraphExecutor:
                         versions=versions,
                         call_confirmed=True,
                     )
+                if self._force_new:
+                    self._drop_replaced_task(project_id, graph, node_id)
                 return self._finish(
                     project_id,
                     graph,
@@ -711,10 +751,12 @@ class GraphExecutor:
     ) -> dict:
         """Manual retry of a submit that may have reached the vendor.
 
-        The marker stays set. A stored ``vendor_task_id`` is polled again.
+        The marker stays set. A stored ``vendor_task_id`` is polled again
+        and the original quote is spent, including when the claim is stale.
         A stored result URL is settled with no new POST. ``force_new=True``
-        drops the task id inside the claim and creates a new generation.
-        The default is False. A plain confirm never does either.
+        releases that quote, authorizes a new one, and only then drops the
+        task id and POSTs. The default is False. A plain confirm never does
+        either.
         """
         return self.confirm(project_id, node_id, retry=True, force_new=force_new)
 
@@ -801,7 +843,12 @@ class GraphExecutor:
             elif status not in (None, NodeStatus.AWAITING_USER.value, "ready") and not stale:
                 raise _GateError("node is not awaiting confirmation")
             elif stale:
-                self._release_quoted_reservation(project_id, node_id)
+                # A retry keeps the reserved quote so it can resume or, for
+                # force_new, release it only after this claim and before the
+                # new authorization. A stale claim with no marker never
+                # reached the vendor, so its quote is skipped here.
+                if not self._retrying:
+                    self._release_quoted_reservation(project_id, node_id)
                 changed = self.conn.execute(
                     """
                     UPDATE node_state
@@ -862,13 +909,10 @@ class GraphExecutor:
     ) -> None:
         """Mark the node running and persist it in the claim transaction.
 
-        ``force_new`` drops the task id and any stored URL here, still inside
-        the claim transaction. The marker itself stays until a successful
-        done write replaces it.
+        The marker and task id stay. ``force_new`` drops the task id only
+        after a new quote is authorized, in ``_drop_replaced_task``.
         """
         self._mark_submitting(graph, node_id)
-        if self._force_new:
-            graph.update_metadata(node_id, vendor_task_id=None, result_obtained=None)
         self._claim_stamps[node_id] = stamp
         self._save(
             project_id,
@@ -879,6 +923,33 @@ class GraphExecutor:
             claim_stamp=stamp,
         )
         self._remember_claim(project_id, node_id)
+
+    def _drop_replaced_task(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+    ) -> None:
+        """Forget the previous task after the new quote is reserved.
+
+        The marker stays until the new attempt finishes. This write checks
+        the claim stamp, so a lost claim cannot clear someone else's id.
+        """
+        graph.update_metadata(
+            node_id,
+            vendor_task_id=None,
+            result_obtained=None,
+            force_new_pending=None,
+        )
+        stamp = self._claim_stamps.get(node_id)
+        self._save(
+            project_id,
+            graph,
+            owned={node_id},
+            touch_state=False,
+            claim_node=node_id,
+            claim_stamp=stamp,
+        )
 
     def _remember_claim(self, project_id: str, node_id: str) -> None:
         """Store the ``updated_at`` ``_save`` actually wrote for this claim."""
@@ -943,8 +1014,11 @@ class GraphExecutor:
         graph: DependencyGraph,
         node_id: str,
     ) -> None:
-        """Stop a stale dispatched submit without calling the vendor again."""
-        self._release_quoted_reservation(project_id, node_id)
+        """Stop a stale dispatched submit without calling the vendor again.
+
+        The reserved quote stays. A retry resumes that task and spends it,
+        instead of skipping it and leaving the generation unbooked.
+        """
         self._release_submit_claim(
             project_id,
             graph,
@@ -1123,8 +1197,13 @@ class GraphExecutor:
         entry = LedgerStore.get(self.conn, entry_id)
         node_id = entry.get("node_id")
         graph = self._load(project_id)
-        if node_id and node_id in graph and _dispatched(graph.node(node_id)):
-            raise _GateError(_blocked_message(graph.node(node_id)))
+        node = graph.node(node_id) if node_id and node_id in graph else None
+        # A force_new pause still holds the previous task until the new quote
+        # is reserved. Raising the cap is that reservation, so it must not
+        # deadlock on the marker. Any other hold refuses.
+        pending_force_new = node is not None and _force_new_pending(node)
+        if node is not None and _vendor_hold(node) and not pending_force_new:
+            raise _GateError(_blocked_message(node))
         view = ProjectBudget.raise_cap(self.conn, project_id, entry_id, new_cap)
         if not view["allowed"]:
             return self._from_budget(
@@ -1141,19 +1220,26 @@ class GraphExecutor:
         if not isinstance(fields, dict):
             raise _GateError("node has no held call to continue")
         if fields.get("modality") == "video" or graph.node(node_id).kind in _VIDEO:
-            self._acquire_submit_claim(project_id, graph, node_id)
+            if pending_force_new:
+                self._force_new = True
             try:
-                return self._finish(
-                    project_id,
-                    graph,
-                    node_id,
-                    fields,
-                    view,
-                    call_confirmed=True,
-                )
-            except Exception:
-                self._abandon_submit_claim(project_id, node_id)
-                raise
+                self._acquire_submit_claim(project_id, graph, node_id)
+                try:
+                    if pending_force_new:
+                        self._drop_replaced_task(project_id, graph, node_id)
+                    return self._finish(
+                        project_id,
+                        graph,
+                        node_id,
+                        fields,
+                        view,
+                        call_confirmed=True,
+                    )
+                except Exception:
+                    self._abandon_submit_claim(project_id, node_id)
+                    raise
+            finally:
+                self._force_new = False
         return self._finish(
             project_id,
             graph,

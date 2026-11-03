@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 SUBMIT_DEADLINE_SECONDS = 20 * 60
 
 
+def _redact_logged_body(text: str) -> str:
+    """Hide the API key if a vendor error body echoes it."""
+    key = Config.ARK_API_KEY
+    if isinstance(text, str) and isinstance(key, str) and key and key in text:
+        return text.replace(key, "***")
+    return text if isinstance(text, str) else ""
+
+
 def _response_task_id(resp) -> Optional[str]:
     """Task id carried on a non-OK create response, if the body has one."""
     try:
@@ -207,7 +215,7 @@ class SeedanceVideoClient:
         )
         
         if not resp.ok:
-            logger.error(f"Seedance 提交失败: {resp.text}")
+            logger.error("Seedance 提交失败: %s", _redact_logged_body(resp.text))
             task_id = _response_task_id(resp)
             try:
                 resp.raise_for_status()
