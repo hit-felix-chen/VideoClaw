@@ -59,7 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "models": {
-        "llm": "qwen3.5-plus",
+        "llm": "qwen3.6-max-preview",
         "vlm": "qwen3.5-plus",
         "image_it2i": "doubao-seedream-5-0-260128",
         "image_t2i": "doubao-seedream-5-0-260128",

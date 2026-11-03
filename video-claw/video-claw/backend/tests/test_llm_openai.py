@@ -4,8 +4,9 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import yaml
 
-from config import Config
+from config import DEFAULT_CONFIG, Config
 from core.agents.doctor_agent import REASON_TYPE_PROMPT_TOO_LONG, DoctorAgent
 from core.agents.script_agent import ScriptWriterAgent
 from core.agents.storyboard_agent import StoryboardAgent
@@ -47,6 +48,22 @@ def _patch_complete(monkeypatch, content):
 
     monkeypatch.setattr(OpenAICompatibleAdapter, "complete", staticmethod(fake_complete))
     return calls
+
+
+class TestDefaultLlm:
+    def test_default_config_llm_is_registered_as_an_llm(self):
+        example = yaml.safe_load(Path("config.yaml.example").read_text(encoding="utf-8"))
+        chosen = DEFAULT_CONFIG["models"]["llm"]
+        assert example["models"]["llm"] == chosen
+        assert Config.LLM_MODEL == chosen
+        spec = ModelRegistry.get(chosen)
+        assert spec is not None
+        assert "llm" in spec.types
+        assert "llm" in spec.modalities
+
+    def test_cancellable_query_requires_an_explicit_model(self):
+        with pytest.raises(ValueError, match="model"):
+            ScriptWriterAgent()._cancellable_query(object(), "prompt")
 
 
 class TestRegistryWebSearch:
