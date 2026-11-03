@@ -25,7 +25,7 @@ import {
   type ProjectStatus,
   type StopResult,
 } from '@/lib/episodeApi';
-import { nodeLabel, runPayload, statusLabel } from '@/lib/episodeFlow';
+import { confirmThenReload, nodeLabel, runPayload, statusLabel } from '@/lib/episodeFlow';
 
 const EMPTY_MODELS = { llm_model: '', image_model: '', video_model: '', tts_model: '' };
 
@@ -358,9 +358,11 @@ export default function EpisodeStudio() {
                     onRun={() => onRun(node)}
                     onConfirm={() => run(async () => {
                       if (!projectId) return;
-                      const result = await confirmNode(projectId, node.id);
+                      const result = await confirmThenReload(
+                        () => confirmNode(projectId, node.id),
+                        () => reload(projectId),
+                      );
                       remember(node.id, result);
-                      await reload(projectId);
                     })}
                     onDecline={() => run(async () => {
                       if (!projectId) return;

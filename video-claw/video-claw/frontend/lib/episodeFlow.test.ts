@@ -4,6 +4,7 @@ import {
   OFFLINE_BADGE,
   canConfirmVideo,
   confirmRequest,
+  confirmThenReload,
   formatQuote,
   needsVideoRetry,
   offlineUncalled,
@@ -83,5 +84,18 @@ describe('episode view', () => {
     ])).toBe('预留上限 6 CNY。按上限入账。');
     const reloaded = JSON.parse(JSON.stringify(node));
     expect(offlineUncalled(reloaded)).toBe(true);
+  });
+
+  it('reloads status after a failed confirm', async () => {
+    const reloads: string[] = [];
+    await expect(confirmThenReload(
+      async () => {
+        throw new Error('未配置视频厂商密钥，不会提交也不会入账');
+      },
+      async () => {
+        reloads.push('status');
+      },
+    )).rejects.toThrow(/未配置视频厂商密钥/);
+    expect(reloads).toEqual(['status']);
   });
 });

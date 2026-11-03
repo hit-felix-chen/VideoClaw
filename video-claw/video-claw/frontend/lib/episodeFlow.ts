@@ -150,6 +150,18 @@ export function reservationCopy(
   return ceiling;
 }
 
+/** Reload even when confirm fails, so the server status (retry or confirm) is visible. */
+export async function confirmThenReload<T>(
+  confirm: () => Promise<T>,
+  reload: () => Promise<unknown>,
+): Promise<T> {
+  try {
+    return await confirm();
+  } finally {
+    await reload();
+  }
+}
+
 export function canConfirmVideo(node: NodeView): boolean {
   if (!isVideoNode(node)) return false;
   if (needsVideoRetry(node)) return false;
