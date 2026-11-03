@@ -28,6 +28,7 @@ def test_known_prices():
     )
 
     assert result["unknown_models"] == []
+    assert result["total_status"] == "complete"
     assert "currency" not in result
     episode = result["by_episode"][0]
     assert episode["image"] == {"min": 0.4, "max": 2.4}
@@ -51,6 +52,7 @@ def test_missing_price_is_unknown_not_zero():
     assert missing_image["by_episode"][0]["video"] == 6.0
     assert missing_image["by_episode"][0]["total"] is None
     assert missing_image["total"] is None
+    assert missing_image["total_status"] == "partial"
     # Treating the missing image price as zero would publish the video cost as the total.
     assert missing_image["total"] != {"min": 6.0, "max": 6.0}
 
@@ -62,6 +64,7 @@ def test_missing_price_is_unknown_not_zero():
     assert missing_video["by_episode"][0]["image"] == {"min": 0.2, "max": 1.2}
     assert missing_video["by_episode"][0]["video"] is None
     assert missing_video["total"] is None
+    assert missing_video["total_status"] == "partial"
     assert missing_video["total"] != {"min": 0.2, "max": 1.2}
 
     unknown_id = CostEstimate.estimate(
@@ -71,6 +74,20 @@ def test_missing_price_is_unknown_not_zero():
     assert unknown_id["unknown_models"] == ["no-such-video-model"]
     assert unknown_id["by_episode"][0]["video"] is None
     assert unknown_id["total"] is None
+    assert unknown_id["total_status"] == "unavailable"
+
+    blank = CostEstimate.estimate(
+        {"image": "", "video": VIDEO_FLASH},
+        [{"episode_number": 1, "asset_count": 2, "duration_seconds": 10}],
+    )
+    assert blank["unknown_models"] == [""]
+    assert blank["by_episode"][0]["image"] is None
+    assert blank["by_episode"][0]["video"] == 6.0
+    assert blank["total"] is None
+    assert blank["total_status"] == "partial"
+    # An empty id must not inherit deepseek-chat, and must not be treated as free.
+    assert blank["total"] != {"min": 6.0, "max": 6.0}
+    assert blank["by_episode"][0]["image"] != {"min": 0.0, "max": 0.0}
 
 
 def test_multiple_episodes_sum_segment_durations():
@@ -208,6 +225,7 @@ def test_empty_session():
     assert result == {
         "by_episode": [],
         "total": {"min": 0.0, "max": 0.0},
+        "total_status": "complete",
         "unknown_models": [],
     }
     assert "currency" not in result
@@ -236,6 +254,7 @@ def test_cost_estimate_route_empty_session_and_known_prices():
         assert empty.json() == {
             "by_episode": [],
             "total": {"min": 0.0, "max": 0.0},
+            "total_status": "complete",
             "unknown_models": [],
         }
         assert "currency" not in empty.json()
@@ -256,6 +275,7 @@ def test_cost_estimate_route_empty_session_and_known_prices():
         assert priced.status_code == 200
         body = priced.json()
         assert body["unknown_models"] == []
+        assert body["total_status"] == "complete"
         assert body["by_episode"][0]["asset_count"] == 1
         assert body["by_episode"][0]["duration_seconds"] == 10.0
         assert body["by_episode"][0]["image"] == {"min": 0.2, "max": 1.2}

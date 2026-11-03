@@ -9,13 +9,13 @@
 
 import os
 import re
-import glob
 import json
 import asyncio
 import logging
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from .asset_versions import AssetVersions
 from .base_agent import AgentInterface
 from prompts.loader import load_prompt
 
@@ -57,12 +57,7 @@ class ReferenceGeneratorAgent(AgentInterface):
     def _list_versions_static(sid: str, shot_id: str) -> List[str]:
         """列出某个分镜的所有历史版本（静态方法，供外部调用）"""
         scenes_dir = os.path.join('code/result/image', str(sid), 'Scenes')
-        files = []
-        for ext in ("jpg", "jpeg", "png", "webp", "bmp"):
-            pattern = os.path.join(scenes_dir, f"{shot_id}*.{ext}")
-            files.extend(glob.glob(pattern))
-        files = sorted(set(files), key=os.path.getmtime)
-        return files
+        return AssetVersions.list_in(scenes_dir, shot_id, ("jpg", "jpeg", "png", "webp", "bmp"))
 
     def _next_version_path(self, sid: str, shot_id: str) -> str:
         """获取下一个版本路径"""

@@ -241,17 +241,6 @@ class TestSegmentPlan:
         assert segment["shots"][0]["duration"] == StoryboardAgent.MIN_SEGMENT_DURATION
         assert sum(shot["duration"] for shot in segment["shots"]) == segment["total_duration"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG storyboard_agent.py:939 _ensure_segment_duration returns min(sum, 15) "
-            "while _segment_from_shots (line 972) leaves each shot at up to 15s. "
-            "Two 10s shots are stored as 10+10 but total_duration is 15. "
-            "Repro: StoryboardAgent._segment_from_shots(1, 2, '教室', "
-            "[{'duration': 10, 'shot_type': '中景', 'content': '中景，甲'}, "
-            "{'duration': 10, 'shot_type': '全景', 'content': '全景，乙'}], ['张三'])."
-        ),
-    )
     def test_segment_total_matches_shot_durations_when_shots_sum_past_the_cap(self):
         shots = [
             {"duration": 10, "shot_type": "中景", "content": "中景，甲"},
@@ -259,6 +248,79 @@ class TestSegmentPlan:
         ]
         segment = StoryboardAgent._segment_from_shots(1, 2, "教室", shots, ["张三"])
         assert segment["total_duration"] == sum(shot["duration"] for shot in segment["shots"])
+        assert [shot["duration"] for shot in segment["shots"]] == [10, 10]
+
+    def test_duration_cap_follows_the_session_video_model(self, monkeypatch):
+        from models.config_model import MODEL_CONFIG
+
+        monkeypatch.setitem(MODEL_CONFIG["models"], "seedance-2-5", {
+            "name": "Seedance 2.5",
+            "provider": "ark",
+            "type": ["video"],
+            "concurrency": 1,
+            "capabilities": {
+                "duration": {"min": 4, "max": 30, "allowed": [4, 8, 12, 30], "integer": True},
+            },
+        })
+        monkeypatch.setitem(MODEL_CONFIG["models"], "allowed-only-video", {
+            "name": "Allowed Only",
+            "provider": "ark",
+            "type": ["video"],
+            "concurrency": 1,
+            "capabilities": {"duration": {"allowed": [5, 30]}},
+        })
+
+        assert StoryboardAgent.max_segment_duration("wan2.7-i2v") == 15
+        assert StoryboardAgent.max_segment_duration("doubao-seedance-2-0-260128") == 12
+        assert StoryboardAgent.max_segment_duration("seedance-2-5") == 30
+        assert StoryboardAgent.max_segment_duration("allowed-only-video") == 30
+        assert StoryboardAgent.max_segment_duration("not-a-real-video") == StoryboardAgent.MAX_SEGMENT_DURATION
+        assert StoryboardAgent.max_segment_duration("") == StoryboardAgent.MAX_SEGMENT_DURATION
+
+        fifteen = StoryboardAgent.max_segment_duration_for_session({
+            "video_generation_mode": "first_frame",
+            "video_first_frame_model": "wan2.7-i2v",
+            "video_reference_model": "seedance-2-5",
+        })
+        thirty = StoryboardAgent.max_segment_duration_for_session({
+            "video_generation_mode": "reference",
+            "video_first_frame_model": "wan2.7-i2v",
+            "video_reference_model": "seedance-2-5",
+        })
+        assert fifteen == 15
+        assert thirty == 30
+
+        capped = StoryboardAgent._segment_from_shots(
+            1, 1, "教室",
+            [{"duration": 20, "shot_type": "中景", "content": "中景，甲"}],
+            ["张三"],
+            max_duration=fifteen,
+        )
+        assert capped["shots"][0]["duration"] == 15
+        assert capped["total_duration"] == sum(shot["duration"] for shot in capped["shots"])
+
+        kept = StoryboardAgent._segment_from_shots(
+            1, 1, "教室",
+            [{"duration": 20, "shot_type": "中景", "content": "中景，甲"}],
+            ["张三"],
+            max_duration=thirty,
+        )
+        assert kept["shots"][0]["duration"] == 20
+        assert kept["total_duration"] == 20
+
+        units = [
+            ScriptUnits.make("U001", duration=10),
+            ScriptUnits.make("U002", duration=10),
+        ]
+        split = StoryboardAgent._fallback_segment_plan(1, units, max_duration=fifteen)
+        assert [[item["unit_id"] for item in plan["items"]] for plan in split] == [["U001"], ["U002"]]
+        joined = StoryboardAgent._fallback_segment_plan(1, units, max_duration=thirty)
+        assert [[item["unit_id"] for item in plan["items"]] for plan in joined] == [["U001", "U002"]]
+        assert joined[0]["total_duration"] == 20
+        accepted = StoryboardAgent._validate_segment_plan(
+            1, [{"unit_ids": ["U001", "U002"]}], units, max_duration=thirty,
+        )
+        assert accepted[0]["total_duration"] == 20
 
     def test_opening_shot_is_normalized_to_a_wide_enough_type(self):
         shots = [{"duration": 5, "shot_type": "特写", "content": "特写，眼睛"}]

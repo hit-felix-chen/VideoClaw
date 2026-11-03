@@ -5,8 +5,6 @@ Model calls are replaced. Pipeline tasks are not executed.
 
 import json
 
-import pytest
-
 from api.logging_config import apply_access_log_setting, apply_log_level_setting
 from core.orchestrator import WorkflowStage
 from tests.support import ConfigState, FakeModelClients, ProjectPayloads, SampleMedia
@@ -210,16 +208,6 @@ class TestWorkflowRoutes:
         assert continued.json()["status"] == "ready"
         assert continued.json()["next_stage"] == "character_design"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG orchestrator.py:388 _get_next_stage only searches STAGE_ORDER, which starts "
-            "at script_generation and does not contain INIT. create_session (line 230) marks "
-            "status['init'] completed, so continue_workflow (line 1065) treats the new project "
-            "as finished and returns status 'completed' while every real stage is still pending. "
-            "Repro: POST /api/project/start, then POST /api/project/{session_id}/continue."
-        ),
-    )
     def test_continue_from_a_new_project_advances_to_script_generation(self, client):
         created = client.post("/api/project/start", json=ProjectPayloads.start_body())
         session_id = created.json()["session_id"]
@@ -254,22 +242,13 @@ class TestSessionRoutes:
         assert client.delete(f"/api/sessions/{session_id}").status_code == 404
         assert not (isolated_runtime["session_dir"] / f"{session_id}.json").exists()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG api/routers/sessions.py:18 delete_session maps every False to HTTP 404 "
-            "'Session not found'. WorkflowEngine.delete_session (orchestrator.py:1484) returns "
-            "False when the session is active and leaves the file in place, but the client "
-            "cannot tell refusal from a missing id. "
-            "Repro: start a project, add its id to engine._active_sessions, DELETE /api/sessions/{id}."
-        ),
-    )
     def test_delete_active_session_reports_a_conflict(self, client, isolated_runtime):
         created = client.post("/api/project/start", json=ProjectPayloads.start_body())
         session_id = created.json()["session_id"]
         isolated_runtime["engine"]._active_sessions.add(session_id)
         response = client.delete(f"/api/sessions/{session_id}")
         assert response.status_code == 409
+        assert "active" in response.json()["detail"].lower()
         assert (isolated_runtime["session_dir"] / f"{session_id}.json").is_file()
 
 

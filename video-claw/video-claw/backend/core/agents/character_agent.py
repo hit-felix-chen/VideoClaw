@@ -9,12 +9,12 @@
 import os
 import re
 import json
-import glob
 import asyncio
 import logging
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from .asset_versions import AssetVersions
 from .base_agent import AgentInterface
 from prompts.loader import load_prompt
 
@@ -86,12 +86,7 @@ class CharacterDesignerAgent(AgentInterface):
         文件命名: {asset_id}.png, {asset_id}_v2.png, {asset_id}_v3.png, ...
         """
         adir = os.path.join(self._asset_base(sid), asset_type)
-        files = []
-        for ext in ("png", "jpg", "jpeg", "webp", "bmp"):
-            pattern = os.path.join(adir, f"{asset_id}*.{ext}")
-            files.extend(glob.glob(pattern))
-        files = sorted(set(files), key=os.path.getmtime)
-        return files
+        return AssetVersions.list_in(adir, asset_id, ("png", "jpg", "jpeg", "webp", "bmp"))
 
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
         """获取下一个版本的文件路径"""

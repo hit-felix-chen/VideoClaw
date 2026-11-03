@@ -1,7 +1,5 @@
 """cleanup_orphan_results against a throwaway result tree."""
 
-import pytest
-
 from core.orchestrator import WorkflowEngine
 
 
@@ -51,25 +49,24 @@ class TestOrphanCleanup:
         assert (result / "video" / "memory-only").is_dir()
         assert not (result / "image" / "orphan").exists()
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=NotADirectoryError,
-        reason=(
-            "BUG orchestrator.py:1549 cleanup_orphan_results calls shutil.rmtree on every "
-            "entry under result/image. A stray file raises NotADirectoryError and aborts "
-            "before later orphan directories are removed. The video loop at line 1555 has "
-            "the same shape. Repro: place result/image/readme.txt and call cleanup_orphan_results()."
-        ),
-    )
     def test_stray_file_in_the_image_dir_does_not_abort_cleanup(self, tmp_path, monkeypatch):
         engine, result, _session_dir = IsolatedEngine.build(tmp_path, monkeypatch)
         stray = result / "image" / "readme.txt"
         stray.write_text("not a session directory", encoding="utf-8")
         (result / "image" / "orphan-dir").mkdir()
+        video_stray = result / "video" / "notes.txt"
+        video_stray.write_text("not a session directory", encoding="utf-8")
+        (result / "video" / "orphan-video").mkdir()
+        outside = result / "script" / "keep.txt"
+        outside.write_text("outside the image and video dirs", encoding="utf-8")
 
         report = engine.cleanup_orphan_results()
 
         assert report["status"] == "cleaned"
         assert "orphan-dir" in report["cleaned"]["images"]
+        assert "orphan-video" in report["cleaned"]["videos"]
         assert not stray.exists()
+        assert not video_stray.exists()
         assert not (result / "image" / "orphan-dir").exists()
+        assert not (result / "video" / "orphan-video").exists()
+        assert outside.read_text(encoding="utf-8") == "outside the image and video dirs"

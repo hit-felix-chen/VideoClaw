@@ -27,8 +27,46 @@ class StoryboardAgent(AgentInterface):
 
     MIN_SHOT_DURATION = 2
     MIN_SEGMENT_DURATION = 5
+    # Used only when the session has no video model, or that model declares no duration.
     MAX_SEGMENT_DURATION = 15
     OPENING_SHOT_TYPES = {"中景", "全景"}
+
+    @staticmethod
+    def _resolve_cap(max_duration: Optional[int]) -> int:
+        if max_duration is None:
+            return StoryboardAgent.MAX_SEGMENT_DURATION
+        try:
+            value = int(max_duration)
+        except (TypeError, ValueError):
+            return StoryboardAgent.MAX_SEGMENT_DURATION
+        if value <= 0:
+            return StoryboardAgent.MAX_SEGMENT_DURATION
+        return value
+
+    @staticmethod
+    def max_segment_duration(video_model: Optional[str]) -> int:
+        """Longest shot or segment the selected video model can render."""
+        from models.config_model import VideoDuration
+
+        if not video_model:
+            return StoryboardAgent.MAX_SEGMENT_DURATION
+        return VideoDuration.max_seconds(video_model)
+
+    @staticmethod
+    def max_segment_duration_for_session(
+        session_meta: Optional[dict],
+        input_data: Optional[dict] = None,
+    ) -> int:
+        """Duration cap for the video model configured on this session."""
+        from .video_agent import VideoDirectorAgent
+
+        meta = session_meta if isinstance(session_meta, dict) else {}
+        data = input_data if isinstance(input_data, dict) else {}
+        try:
+            _mode, model = VideoDirectorAgent._select_video_model(data, meta)
+        except ValueError:
+            model = ""
+        return StoryboardAgent.max_segment_duration(model)
 
     @staticmethod
     def _extract_json_array(text: str) -> Optional[List[dict]]:
@@ -200,14 +238,14 @@ class StoryboardAgent(AgentInterface):
         return speaker, tone, dialogue
 
     @classmethod
-    def _duration_for_script_unit(cls, text: str, is_dialogue: bool) -> int:
+    def _duration_for_script_unit(cls, text: str, is_dialogue: bool, *, max_duration: Optional[int] = None) -> int:
         if not is_dialogue:
             return 2
         dialogue = cls._dialogue_parts(text)
         dialogue_text = dialogue[2] if dialogue else text
         visible_text = re.sub(r"\s+", "", dialogue_text)
         duration = (len(visible_text) + 4) // 5
-        return max(2, min(15, duration))
+        return max(2, min(cls._resolve_cap(max_duration), duration))
 
     @classmethod
     def _is_entry_action(cls, text: str, character_names: List[str]) -> bool:
@@ -226,6 +264,8 @@ class StoryboardAgent(AgentInterface):
         script_text: str,
         characters: List[dict],
         settings: List[dict],
+        *,
+        max_duration: Optional[int] = None,
     ) -> Tuple[str, List[dict]]:
         character_names = cls._character_names(characters)
         setting_names = cls._setting_names(settings)
@@ -273,7 +313,7 @@ class StoryboardAgent(AgentInterface):
 
             unit_id = f"U{len(units) + 1:03d}"
             is_dialogue = dialogue is not None
-            duration = cls._duration_for_script_unit(line, is_dialogue)
+            duration = cls._duration_for_script_unit(line, is_dialogue, max_duration=max_duration)
             matched_chars = cls._match_characters(line, character_names)
             unit_chars = matched_chars[:]
             speaker = ""
@@ -341,7 +381,14 @@ class StoryboardAgent(AgentInterface):
         return list(dict.fromkeys(ids))
 
     @classmethod
-    def _validate_segment_plan(cls, ep_n: int, raw_plan: List[dict], units: List[dict]) -> List[dict]:
+    def _validate_segment_plan(
+        cls,
+        ep_n: int,
+        raw_plan: List[dict],
+        units: List[dict],
+        *,
+        max_duration: Optional[int] = None,
+    ) -> List[dict]:
         unit_by_id = {item["unit_id"]: item for item in units}
         source_ids = [item["unit_id"] for item in units]
         flat_ids: List[str] = []
@@ -368,8 +415,9 @@ class StoryboardAgent(AgentInterface):
                     raise ValueError(f"{item['unit_id']} 是入场动作，必须作为片段开头")
 
             duration = sum(int(item.get("duration") or 0) for item in items)
-            if duration > cls.MAX_SEGMENT_DURATION:
-                raise ValueError(f"片段时长 {duration}s 超出上限 {cls.MAX_SEGMENT_DURATION}s")
+            cap = cls._resolve_cap(max_duration)
+            if duration > cap:
+                raise ValueError(f"片段时长 {duration}s 超出上限 {cap}s")
 
             flat_ids.extend(ids)
             plans.append(cls._segment_plan_from_units(ep_n, len(plans) + 1, items))
@@ -381,9 +429,10 @@ class StoryboardAgent(AgentInterface):
         return plans
 
     @classmethod
-    def _fallback_segment_plan(cls, ep_n: int, units: List[dict]) -> List[dict]:
+    def _fallback_segment_plan(cls, ep_n: int, units: List[dict], *, max_duration: Optional[int] = None) -> List[dict]:
         plans: List[dict] = []
         current: List[dict] = []
+        cap = cls._resolve_cap(max_duration)
 
         def flush_current():
             nonlocal current
@@ -396,7 +445,7 @@ class StoryboardAgent(AgentInterface):
             current_duration = sum(int(item.get("duration") or 0) for item in current)
             scene_changed = current and unit.get("scene_key") != current[-1].get("scene_key")
             entry_boundary = current and unit.get("is_entry")
-            would_overflow = current and current_duration + int(unit.get("duration") or 0) > cls.MAX_SEGMENT_DURATION
+            would_overflow = current and current_duration + int(unit.get("duration") or 0) > cap
 
             if scene_changed or entry_boundary or would_overflow:
                 flush_current()
@@ -428,6 +477,8 @@ class StoryboardAgent(AgentInterface):
         characters: List[dict],
         settings: List[dict],
         retry_error: str = "",
+        *,
+        max_duration: Optional[int] = None,
     ) -> str:
         template = _get_storyboard_prompt("segment_plan", "zh")
         retry_feedback = ""
@@ -442,6 +493,7 @@ class StoryboardAgent(AgentInterface):
             asset_characters=json.dumps(characters, ensure_ascii=False),
             asset_settings=json.dumps(settings, ensure_ascii=False),
             retry_feedback=retry_feedback,
+            max_segment_duration=cls._resolve_cap(max_duration),
         )
 
     @classmethod
@@ -582,7 +634,14 @@ class StoryboardAgent(AgentInterface):
         return f"{shot_type}，平视机位，镜头同时拍到{subject}，站位：主要人物面向镜头或彼此成自然对话关系分布。"
 
     @classmethod
-    def _normalize_segment_design(cls, ep_n: int, plan: dict, raw_design: dict) -> dict:
+    def _normalize_segment_design(
+        cls,
+        ep_n: int,
+        plan: dict,
+        raw_design: dict,
+        *,
+        max_duration: Optional[int] = None,
+    ) -> dict:
         items = plan.get("items", [])
         raw_shots = raw_design.get("shots") if isinstance(raw_design, dict) else None
         if not isinstance(raw_shots, list) or not raw_shots:
@@ -626,10 +685,11 @@ class StoryboardAgent(AgentInterface):
             plan.get("scene_time", ""),
             plan.get("scene_space", ""),
             plan.get("scene_context", ""),
+            max_duration=max_duration,
         )
 
     @classmethod
-    def _fallback_design_segment(cls, ep_n: int, plan: dict) -> dict:
+    def _fallback_design_segment(cls, ep_n: int, plan: dict, *, max_duration: Optional[int] = None) -> dict:
         characters = plan.get("characters", [])
         durations = cls._shot_durations_for_plan(plan)
         shots: List[dict] = []
@@ -660,6 +720,7 @@ class StoryboardAgent(AgentInterface):
             plan.get("scene_time", ""),
             plan.get("scene_space", ""),
             plan.get("scene_context", ""),
+            max_duration=max_duration,
         )
 
     @staticmethod
@@ -791,6 +852,8 @@ class StoryboardAgent(AgentInterface):
         settings: List[dict],
         llm_model: str,
         sid: str,
+        *,
+        max_duration: Optional[int] = None,
     ) -> List[dict]:
         last_error: Optional[Exception] = None
         for attempt in range(3):
@@ -802,6 +865,7 @@ class StoryboardAgent(AgentInterface):
                     characters,
                     settings,
                     retry_error=str(last_error) if last_error else "",
+                    max_duration=max_duration,
                 )
                 raw_plan = await self._query_json_array_with_retries(
                     prompt,
@@ -810,13 +874,13 @@ class StoryboardAgent(AgentInterface):
                     label=f"第 {ep_n} 集片段规划",
                     max_retries=1,
                 )
-                return self._validate_segment_plan(ep_n, raw_plan, units)
+                return self._validate_segment_plan(ep_n, raw_plan, units, max_duration=max_duration)
             except Exception as exc:
                 last_error = exc
                 logger.warning("[Storyboard] Episode %s segment plan validation attempt %d failed: %s", ep_n, attempt + 1, exc)
 
         logger.warning("[Storyboard] Episode %s falling back to deterministic segment plan: %s", ep_n, last_error)
-        return self._fallback_segment_plan(ep_n, units)
+        return self._fallback_segment_plan(ep_n, units, max_duration=max_duration)
 
     async def _design_one_segment(
         self,
@@ -826,6 +890,8 @@ class StoryboardAgent(AgentInterface):
         style: str,
         llm_model: str,
         sid: str,
+        *,
+        max_duration: Optional[int] = None,
     ) -> dict:
         last_error: Optional[Exception] = None
         for attempt in range(3):
@@ -844,7 +910,7 @@ class StoryboardAgent(AgentInterface):
                     label=f"第 {ep_n} 集片段 {plan.get('segment_number')} 分镜设计",
                     max_retries=1,
                 )
-                return self._normalize_segment_design(ep_n, plan, raw_design)
+                return self._normalize_segment_design(ep_n, plan, raw_design, max_duration=max_duration)
             except Exception as exc:
                 last_error = exc
                 logger.warning(
@@ -861,7 +927,7 @@ class StoryboardAgent(AgentInterface):
             plan.get("segment_number"),
             last_error,
         )
-        return self._fallback_design_segment(ep_n, plan)
+        return self._fallback_design_segment(ep_n, plan, max_duration=max_duration)
 
     async def _design_episode_storyboard(
         self,
@@ -874,15 +940,21 @@ class StoryboardAgent(AgentInterface):
         llm_model: str,
         sid: str,
         progress_note: Optional[Callable[[str], None]] = None,
+        max_duration: Optional[int] = None,
     ) -> List[dict]:
-        annotated_script, units = self._annotate_episode_script(ep_c, characters, settings)
+        annotated_script, units = self._annotate_episode_script(
+            ep_c, characters, settings, max_duration=max_duration,
+        )
         if not units:
             raise Exception(f"第 {ep_n} 集未能识别出动作或台词")
 
         logger.info("[Storyboard] Episode %s annotated %d script units", ep_n, len(units))
         if progress_note:
             progress_note(f"第 {ep_n} 集已完成时长标注，正在划分片段")
-        plans = await self._plan_episode_segments(ep_n, ep_t, annotated_script, units, characters, settings, llm_model, sid)
+        plans = await self._plan_episode_segments(
+            ep_n, ep_t, annotated_script, units, characters, settings, llm_model, sid,
+            max_duration=max_duration,
+        )
         if not plans:
             raise Exception(f"第 {ep_n} 集片段规划失败")
 
@@ -890,7 +962,7 @@ class StoryboardAgent(AgentInterface):
         if progress_note:
             progress_note(f"第 {ep_n} 集已规划 {len(plans)} 个片段，正在设计分镜")
         tasks = [
-            self._design_one_segment(ep_n, ep_t, plan, style, llm_model, sid)
+            self._design_one_segment(ep_n, ep_t, plan, style, llm_model, sid, max_duration=max_duration)
             for plan in plans
         ]
         segments = await asyncio.gather(*tasks)
@@ -902,14 +974,14 @@ class StoryboardAgent(AgentInterface):
         return segments
 
     @classmethod
-    def _estimate_duration(cls, text: str, is_dialogue: bool) -> int:
+    def _estimate_duration(cls, text: str, is_dialogue: bool, *, max_duration: Optional[int] = None) -> int:
         """Legacy heuristic duration in seconds."""
         visible_text = re.sub(r"[“”\"'，。！？、,.!?；;：:\s]", "", text)
         if is_dialogue:
             duration = 3 + len(visible_text) // 18
         else:
             duration = 3 + len(visible_text) // 34
-        return max(cls.MIN_SHOT_DURATION, min(duration, cls.MAX_SEGMENT_DURATION))
+        return max(cls.MIN_SHOT_DURATION, min(duration, cls._resolve_cap(max_duration)))
 
     @staticmethod
     def _infer_shot_type(text: str, is_dialogue: bool) -> str:
@@ -932,11 +1004,18 @@ class StoryboardAgent(AgentInterface):
 
     @classmethod
     def _ensure_segment_duration(cls, shots: List[dict]) -> int:
+        """Return the sum of shot durations, padding a short segment up to the minimum.
+
+        The total is the sum of the shots actually stored. It is not clipped to
+        the model cap on its own: a cap that is shorter than the shots would
+        report a total the shots do not add up to.
+        """
         total = sum(int(shot.get("duration") or cls.MIN_SHOT_DURATION) for shot in shots)
         if shots and total < cls.MIN_SEGMENT_DURATION:
-            shots[-1]["duration"] += cls.MIN_SEGMENT_DURATION - total
-            total = cls.MIN_SEGMENT_DURATION
-        return min(total, cls.MAX_SEGMENT_DURATION)
+            last = int(shots[-1].get("duration") or cls.MIN_SHOT_DURATION)
+            shots[-1]["duration"] = last + (cls.MIN_SEGMENT_DURATION - total)
+            total = sum(int(shot.get("duration") or 0) for shot in shots)
+        return total
 
     @classmethod
     def _make_shot_content(
@@ -966,11 +1045,14 @@ class StoryboardAgent(AgentInterface):
         scene_time: str = "",
         scene_space: str = "",
         scene_context: str = "",
+        *,
+        max_duration: Optional[int] = None,
     ) -> dict:
+        cap = cls._resolve_cap(max_duration)
         for idx, shot in enumerate(shots, 1):
             shot["shot_number"] = idx
             shot["duration"] = min(
-                cls.MAX_SEGMENT_DURATION,
+                cap,
                 max(cls.MIN_SHOT_DURATION, int(shot.get("duration") or cls.MIN_SHOT_DURATION)),
             )
         cls._normalize_first_shot_type(shots)
@@ -999,6 +1081,8 @@ class StoryboardAgent(AgentInterface):
         script_text: str,
         characters: List[dict],
         settings: List[dict],
+        *,
+        max_duration: Optional[int] = None,
     ) -> List[dict]:
         """Deterministically parse script text into model-ready segments.
 
@@ -1059,7 +1143,7 @@ class StoryboardAgent(AgentInterface):
                     shot_chars = shot_chars or scene_characters
 
             shot_type = cls._infer_shot_type(line, is_dialogue)
-            duration = cls._estimate_duration(shot_text, is_dialogue)
+            duration = cls._estimate_duration(shot_text, is_dialogue, max_duration=max_duration)
             location = cls._resolve_location(line, current_location, setting_names)
 
             atomic_shots.append({
@@ -1118,6 +1202,7 @@ class StoryboardAgent(AgentInterface):
                 current_scene_time,
                 current_scene_space,
                 current_scene_context,
+                max_duration=max_duration,
             ))
             current_items = []
             current_scene_key = None
@@ -1133,10 +1218,11 @@ class StoryboardAgent(AgentInterface):
             scene_changed = current_items and (
                 item["scene_key"] != current_scene_key or item["location"] != current_location
             )
-            would_overflow = current_items and current_duration + item_duration > cls.MAX_SEGMENT_DURATION
+            cap = cls._resolve_cap(max_duration)
+            would_overflow = current_items and current_duration + item_duration > cap
 
             # A scene switch always starts a new video-model call. Otherwise greedily
-            # pack shots until the next one would exceed the 15s upper bound.
+            # pack shots until the next one would exceed the selected model's cap.
             if scene_changed or would_overflow:
                 flush_current()
 
@@ -1154,8 +1240,15 @@ class StoryboardAgent(AgentInterface):
         return segments
 
     @classmethod
-    def _normalize_llm_segments(cls, ep_n: int, extracted: List[dict]) -> List[dict]:
+    def _normalize_llm_segments(
+        cls,
+        ep_n: int,
+        extracted: List[dict],
+        *,
+        max_duration: Optional[int] = None,
+    ) -> List[dict]:
         valid_segments = []
+        cap = cls._resolve_cap(max_duration)
         for seg in extracted:
             if not isinstance(seg, dict):
                 continue
@@ -1192,12 +1285,13 @@ class StoryboardAgent(AgentInterface):
                     seg.get("location", ""),
                     chunk,
                     seg.get("characters", []),
+                    max_duration=max_duration,
                 ))
                 chunk = []
 
             for shot in pending_shots:
                 chunk_duration = sum(int(item.get("duration") or cls.MIN_SHOT_DURATION) for item in chunk)
-                if chunk and chunk_duration + int(shot["duration"]) > cls.MAX_SEGMENT_DURATION:
+                if chunk and chunk_duration + int(shot["duration"]) > cap:
                     flush_chunk()
                 chunk.append(shot)
             flush_chunk()
@@ -1298,7 +1392,8 @@ class StoryboardAgent(AgentInterface):
 
         chars = script_data.get("characters", [])
         sets = script_data.get("settings", [])
-        
+        max_duration = self.max_segment_duration_for_session(session_meta, input_data)
+
         self._report_progress("分镜", f"开始设计 {len(episodes_to_proc)} 集的分镜...", 5)
         total_to_process = len(episodes_to_proc)
         completed_count = 0
@@ -1324,6 +1419,7 @@ class StoryboardAgent(AgentInterface):
                 llm_model,
                 sid,
                 progress_note=report_storyboard_note,
+                max_duration=max_duration,
             )
 
             return {

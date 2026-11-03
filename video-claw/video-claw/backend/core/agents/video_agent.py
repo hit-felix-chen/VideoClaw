@@ -9,13 +9,13 @@
 
 import os
 import re
-import glob
 import asyncio
 import logging
 import threading
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from .asset_versions import AssetVersions
 from .base_agent import AgentInterface
 from .last_frame_chain import LastFrameChain
 
@@ -36,11 +36,7 @@ class VideoDirectorAgent(AgentInterface):
 
     def _list_versions(self, sid: str, segment_id: str) -> List[str]:
         """列出某个片段视频的所有历史版本"""
-        video_dir = self._video_base(sid)
-        pattern = os.path.join(video_dir, f"{segment_id}*.mp4")
-        files = [f for f in sorted(glob.glob(pattern), key=os.path.getmtime)
-                 if not f.endswith('_final.mp4')]
-        return files
+        return AssetVersions.list_in(self._video_base(sid), segment_id, ("mp4",))
 
     def _next_version_path(self, sid: str, segment_id: str) -> str:
         """获取下一个版本路径"""

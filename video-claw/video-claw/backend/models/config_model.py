@@ -370,6 +370,11 @@ MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek C
                                             'adapter_ability_types': ['first_frame_i2v', 'native_audio'],
                                             'input_modalities': ['text', 'image'],
                                             'adapter_input_modalities': ['text', 'image'],
+                                            'duration': {'min': 5,
+                                                         'max': 10,
+                                                         'allowed': [5, 10],
+                                                         'integer': True,
+                                                         'verified': False},
                                             'api_contract_verified': True}},
             'kling-v2-5-turbo': {'name': 'Kling V2.5 Turbo',
                                  'provider': 'kling',
@@ -381,6 +386,11 @@ MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek C
                                                   'adapter_ability_types': ['first_frame_i2v', 'native_audio'],
                                                   'input_modalities': ['text', 'image'],
                                                   'adapter_input_modalities': ['text', 'image'],
+                                                  'duration': {'min': 5,
+                                                               'max': 10,
+                                                               'allowed': [5, 10],
+                                                               'integer': True,
+                                                               'verified': False},
                                                   'api_contract_verified': True}},
             'doubao-seedance-2-0-260128': {'name': 'Seedance 2.0',
                                            'provider': 'ark',
@@ -575,6 +585,11 @@ MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek C
                                  'capabilities': {'ability_type': 'image_to_video',
                                                   'ability_types': [],
                                                   'adapter_ability_types': ['first_frame_i2v'],
+                                                  'duration': {'min': 5,
+                                                               'max': 10,
+                                                               'allowed': [5, 10],
+                                                               'integer': True,
+                                                               'verified': False},
                                                   'api_contract_verified': False}},
             'seedance-1-0-lite': {'name': 'Seedance 1.0 Lite',
                                   'provider': 'ark',
@@ -585,6 +600,11 @@ MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek C
                                   'capabilities': {'ability_type': 'image_to_video',
                                                    'ability_types': [],
                                                    'adapter_ability_types': ['first_frame_i2v'],
+                                                   'duration': {'min': 5,
+                                                                'max': 10,
+                                                                'allowed': [5, 10],
+                                                                'integer': True,
+                                                                'verified': False},
                                                    'api_contract_verified': False}}}}
 
 
@@ -592,23 +612,113 @@ def load_model_config() -> dict[str, Any]:
     return MODEL_CONFIG
 
 
+class ModelRegistry:
+    """Resolve a model id to its ``MODEL_CONFIG`` entry.
+
+    Matching is exact, then normalized (case, ``models/`` prefix, ``api/{provider}/``
+    prefix). A non-empty query may also contain a registered id, as in
+    ``models/deepseek-chat``. An empty string is never treated as a substring
+    of every id.
+    """
+
+    @staticmethod
+    def normalize(model: str) -> str:
+        if not isinstance(model, str):
+            return ""
+        text = model.strip().lower()
+        if text.startswith("models/"):
+            text = text[len("models/"):].strip()
+        if text.startswith("api/"):
+            parts = text.split("/")
+            if len(parts) >= 3 and parts[-1]:
+                text = parts[-1].strip()
+        return text
+
+    @staticmethod
+    def unknown(model: str) -> dict[str, Any]:
+        return {
+            "name": model,
+            "provider": "unknown",
+            "type": [],
+            "concurrency": 3,
+        }
+
+    @staticmethod
+    def get(model: str) -> dict[str, Any]:
+        models = MODEL_CONFIG.get("models", {})
+        if isinstance(model, str) and model in models:
+            return models[model]
+
+        normalized = ModelRegistry.normalize(model)
+        if not normalized:
+            return ModelRegistry.unknown(model if isinstance(model, str) else "")
+
+        for key, value in models.items():
+            if key.lower() == normalized:
+                return value
+
+        query = model.strip().lower() if isinstance(model, str) else ""
+        best_key = ""
+        if query:
+            for key in models:
+                folded = key.lower()
+                if folded and folded in query and len(folded) > len(best_key):
+                    best_key = key
+        if best_key:
+            return models[best_key]
+        return ModelRegistry.unknown(model if isinstance(model, str) else "")
+
+
 def get_model_config(model: str) -> dict[str, Any]:
-    """Get metadata for one model, with a loose fallback for provider aliases."""
-    models = MODEL_CONFIG.get("models", {})
-    if model in models:
-        return models[model]
+    """Get metadata for one model. See ``ModelRegistry`` for match rules."""
+    return ModelRegistry.get(model)
 
-    model_lower = model.lower()
-    for key, value in models.items():
-        if key in model_lower or model_lower in key:
-            return value
 
-    return {
-        "name": model,
-        "provider": "unknown",
-        "type": [],
-        "concurrency": 3,
-    }
+class VideoDuration:
+    """Shot and segment length limits declared on a video model.
+
+    ``capabilities.duration.max`` is the longest clip that model can render.
+    ``capabilities.duration.allowed`` is the discrete set when the API does
+    not accept every integer up to that max. A model with neither falls back
+    to ``DEFAULT_MAX_SECONDS``, the historical 15 second storyboard cap.
+    """
+
+    DEFAULT_MAX_SECONDS = 15
+
+    @staticmethod
+    def declared(model_id: Optional[str]) -> dict[str, Any]:
+        if not isinstance(model_id, str) or not model_id:
+            return {}
+        metadata = MODEL_CONFIG.get("models", {}).get(model_id)
+        if not isinstance(metadata, dict):
+            return {}
+        capabilities = metadata.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return {}
+        duration = capabilities.get("duration")
+        return duration if isinstance(duration, dict) else {}
+
+    @staticmethod
+    def _positive_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if value <= 0:
+            return None
+        return int(value)
+
+    @staticmethod
+    def max_seconds(model_id: Optional[str]) -> int:
+        duration = VideoDuration.declared(model_id)
+        maximum = VideoDuration._positive_int(duration.get("max"))
+        if maximum is not None:
+            return maximum
+        allowed = duration.get("allowed")
+        if isinstance(allowed, (list, tuple)):
+            numbers = [VideoDuration._positive_int(item) for item in allowed]
+            present = [item for item in numbers if item is not None]
+            if present:
+                return max(present)
+        return VideoDuration.DEFAULT_MAX_SECONDS
 
 
 class CostEstimate:
@@ -617,13 +727,16 @@ class CostEstimate:
     Inputs are the session's chosen model ids, the number of reference
     scenes/assets (one per storyboard segment), and the sum of
     ``segment.total_duration`` for each episode. The result is ``by_episode``,
-    ``total``, and ``unknown_models``.
+    ``total``, ``total_status``, and ``unknown_models``.
 
     Prices are ``price_per_image`` and ``price_per_second`` on the exact
     ``MODEL_CONFIG`` entry. Amounts are unlabeled: the registry has no currency
     field. A model that lacks the price for a quantity it would actually bill
     is listed in ``unknown_models`` and left out of the total. It is never
-    priced as zero.
+    priced as zero and never given another model's price. ``total`` is then
+    ``None`` and ``total_status`` is ``partial`` when some billed components
+    still have a price, or ``unavailable`` when none do. ``complete`` means
+    ``total`` is the full cost.
     """
 
     # Image cost is a range of 1 to 6 calls per asset: _generate_one in
@@ -686,12 +799,14 @@ class CostEstimate:
                 "total": episode_total,
             })
 
+        total = None if incomplete else {
+            "min": CostEstimate._money(total_min),
+            "max": CostEstimate._money(total_max),
+        }
         return {
             "by_episode": rows,
-            "total": None if incomplete else {
-                "min": CostEstimate._money(total_min),
-                "max": CostEstimate._money(total_max),
-            },
+            "total": total,
+            "total_status": CostEstimate._total_status(incomplete, rows),
             "unknown_models": unknown,
         }
 
@@ -810,9 +925,36 @@ class CostEstimate:
         if not used:
             return None
         price = CostEstimate._unit_price(model_id, field)
-        if price is None and model_id and model_id not in unknown:
+        if price is None and model_id not in unknown:
             unknown.append(model_id)
         return price
+
+    @staticmethod
+    def _total_status(incomplete: bool, rows: list[dict[str, Any]]) -> str:
+        """Tell callers whether ``total`` is the full cost or must not be used.
+
+        ``complete`` — every billed component has a price.
+        ``partial`` — some billed components have a price and at least one does not.
+        ``unavailable`` — a total cannot be computed and no billed component is priced.
+        """
+        if not incomplete:
+            return "complete"
+        known = False
+        missing = False
+        for row in rows:
+            if (row.get("asset_count") or 0) > 0:
+                if row.get("image") is None:
+                    missing = True
+                else:
+                    known = True
+            if (row.get("duration_seconds") or 0) > 0:
+                if row.get("video") is None:
+                    missing = True
+                else:
+                    known = True
+        if known and missing:
+            return "partial"
+        return "unavailable"
 
     @staticmethod
     def _unit_price(model_id: str, field: str) -> Optional[float]:

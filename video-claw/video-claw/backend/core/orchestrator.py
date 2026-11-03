@@ -134,6 +134,14 @@ class WorkflowState:
         }
 
 
+class SessionDeleteResult:
+    """Why ``WorkflowEngine.delete_session`` did or did not remove a session."""
+
+    DELETED = "deleted"
+    MISSING = "missing"
+    ACTIVE = "active"
+
+
 class WorkflowEngine:
     """工作流引擎 - 管理六阶段状态机"""
 
@@ -387,12 +395,20 @@ class WorkflowEngine:
         task.add_done_callback(_cleanup)
 
     def _get_next_stage(self, current: WorkflowStage) -> Optional[WorkflowStage]:
+        """Return the stage that follows ``current``.
+
+        ``INIT`` is the session before any real stage. It is not in
+        ``STAGE_ORDER``, so a finished init step continues into
+        ``script_generation`` rather than looking like the workflow is done.
+        """
+        if current == WorkflowStage.INIT:
+            return STAGE_ORDER[0] if STAGE_ORDER else None
         try:
             idx = STAGE_ORDER.index(current)
-            if idx + 1 < len(STAGE_ORDER):
-                return STAGE_ORDER[idx + 1]
         except ValueError:
-            pass
+            return None
+        if idx + 1 < len(STAGE_ORDER):
+            return STAGE_ORDER[idx + 1]
         return None
 
     # ──────────── 跨阶段同步逻辑 ────────────
@@ -1477,8 +1493,13 @@ class WorkflowEngine:
             except Exception as e:
                 logger.warning(f"Failed to load session {filename}: {e}")
 
-    def delete_session(self, session_id: str) -> bool:
-        """删除指定会话（内存 + 磁盘 + 结果文件）"""
+    def delete_session(self, session_id: str) -> str:
+        """删除指定会话（内存 + 磁盘 + 结果文件）.
+
+        Returns ``SessionDeleteResult.ACTIVE`` when the session is running and
+        must be kept, ``MISSING`` when there is nothing to delete, and
+        ``DELETED`` after the session file and its results are removed.
+        """
         from config import settings
         import shutil
 
@@ -1486,12 +1507,12 @@ class WorkflowEngine:
             if session_id in self._active_sessions:
                 self.get_stop_event(session_id).set()
                 logger.warning(f"Refusing to delete active session: {session_id}")
-                return False
+                return SessionDeleteResult.ACTIVE
 
             path = os.path.join(self._session_dir, f"{session_id}.json")
             exists = session_id in self.sessions or os.path.exists(path)
             if not exists:
-                return False
+                return SessionDeleteResult.MISSING
 
             # 从内存中移除
             self.sessions.pop(session_id, None)
@@ -1520,7 +1541,7 @@ class WorkflowEngine:
                 shutil.rmtree(video_dir)
 
         logger.info(f"Session and results deleted: {session_id}")
-        return True
+        return SessionDeleteResult.DELETED
 
     def cleanup_orphan_results(self) -> Dict[str, Any]:
         """Remove result files whose session no longer exists."""
@@ -1548,19 +1569,52 @@ class WorkflowEngine:
 
             image_dir = os.path.join(result_base, 'image')
             if os.path.isdir(image_dir):
-                for dirname in os.listdir(image_dir):
-                    if dirname != 'test_avail' and dirname not in session_ids:
-                        shutil.rmtree(os.path.join(image_dir, dirname))
-                        cleaned["images"].append(dirname)
+                for name in os.listdir(image_dir):
+                    self._remove_orphan_child(image_dir, name, session_ids, cleaned["images"])
 
             video_dir = os.path.join(result_base, 'video')
             if os.path.isdir(video_dir):
-                for dirname in os.listdir(video_dir):
-                    if dirname != 'test_avail' and dirname not in session_ids:
-                        shutil.rmtree(os.path.join(video_dir, dirname))
-                        cleaned["videos"].append(dirname)
+                for name in os.listdir(video_dir):
+                    self._remove_orphan_child(video_dir, name, session_ids, cleaned["videos"])
 
             return {"status": "cleaned", "cleaned": cleaned}
+
+    @staticmethod
+    def _remove_orphan_child(directory: str, name: str, session_ids: set, removed: list) -> None:
+        """Remove one child of ``result/image`` or ``result/video``.
+
+        Session directories and ``test_avail`` stay. A stray file is unlinked
+        so it cannot abort the rest of the scan. A directory is removed with
+        ``rmtree``. Links are unlinked without following them, and a name that
+        would resolve outside ``directory`` is left untouched.
+        """
+        if not name or name in {".", "..", "test_avail"} or name in session_ids:
+            return
+        if os.path.isabs(name) or os.path.dirname(name):
+            return
+        path = os.path.join(directory, name)
+        directory_real = os.path.realpath(directory)
+        if os.path.islink(path):
+            link_parent = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+            if link_parent != directory_real:
+                return
+            os.unlink(path)
+            return
+        if not os.path.exists(path):
+            return
+        path_real = os.path.realpath(path)
+        try:
+            inside = os.path.commonpath([directory_real, path_real]) == directory_real
+        except ValueError:
+            return
+        if not inside:
+            return
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+            removed.append(name)
+            return
+        if os.path.isfile(path):
+            os.remove(path)
 
     def get_scene_asset_counts(self, session_id: str, scene_number: int) -> Dict[str, Any]:
         """Count generated reference images/videos from the current artifact state only."""

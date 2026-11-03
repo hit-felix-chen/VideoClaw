@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from api.dependencies import workflow_engine
+from core.orchestrator import SessionDeleteResult
 
 router = APIRouter(tags=["Sessions"])
 
@@ -14,7 +15,9 @@ async def list_sessions():
 async def delete_session(session_id: str):
     """直接删除历史记录（无密码控制）"""
     deleted = workflow_engine.delete_session(session_id)
-    if not deleted:
+    if deleted == SessionDeleteResult.ACTIVE:
+        raise HTTPException(409, "Session is active and cannot be deleted")
+    if deleted != SessionDeleteResult.DELETED:
         raise HTTPException(404, "Session not found")
     return {"status": "deleted", "session_id": session_id}
 
