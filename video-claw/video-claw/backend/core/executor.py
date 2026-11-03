@@ -48,15 +48,16 @@ error does not chain the vendor exception. No spent row is written.
 Spent and done are committed in one transaction after submit returns.
 
 Before ``adapter.submit``, the same claim writes ``submit_dispatched`` on
-the node and commits it. The marker stays unless this process is sure the
-vendor did not accept a generation: a missing key, local parameter or
-asset failure, request construction before HTTP, or a terminal vendor
-rejection (failed, expired, or a clear 4xx). Timeouts, connect and read
-errors, download failures, a malformed return, and any other exception
-keep the marker. The quote is skipped, the node returns to
-``awaiting_user``, and only ``retry_video_submit`` may send again. When
-the create call returns a task id it is stored as ``vendor_task_id`` and
-retry polls that task instead of creating another one.
+the node and commits it. That marker and ``vendor_task_id`` are cleared
+only when this attempt never issued HTTP: a missing key, a missing file,
+an unknown model, ``FileNotFoundError``, or ``UnsupportedParam``. Poll and
+download errors, vendor failed or expired, and every HTTP 4xx keep both.
+A 4xx body that contains an id stores that id. The quote is skipped, the
+node returns to ``awaiting_user``, and a plain confirm does not POST.
+``retry_video_submit`` claims without clearing the marker. It resumes a
+stored task id or settles a stored result URL. ``force_new=True`` is
+required before a failed or expired task can be created again. A result
+URL is committed on its own before the spent-and-done transaction.
 After ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes), recovery and the
 next ``confirm`` do not submit again. A stale ``running`` row with no
 marker died before the vendor call and can be claimed again.
@@ -66,7 +67,8 @@ The Seedance client stops the whole submit at 20 minutes
 cap of 120 rounds with a 30-second HTTP timeout and a 5-second pause
 would otherwise run about 74 minutes and outlive the claim.
 A fresh ``running`` claim is rejected so a live submit is not double-spent.
-``raise_budget`` claims the same way. ``node_state`` ``ready`` left by a
+``raise_budget`` refuses while ``submit_dispatched`` is set, and otherwise
+claims the same way. ``node_state`` ``ready`` left by a
 kill after the cap is raised is claimable, and that confirm spends the
 quote already reserved instead of saying the node is not awaiting.
 
@@ -101,7 +103,7 @@ from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
 from models.middle.pricing import QuoteRequest, quote
 from models.middle.registry import ModelRegistry
 from storage.confirmations import ImpactConfirmation
-from storage.database import StorageError, require_id, transaction, utc_now
+from storage.database import StorageError, dump_json, require_id, transaction, utc_now
 from storage.ledger import AWAITING_USER, QUOTED, SKIPPED, LedgerStore
 from storage.projects import GraphStore, ProjectStore
 from storage.staleness import RegenerationQuote
@@ -119,6 +121,10 @@ SUBMIT_DISPATCHED = "submit_dispatched"
 SUBMIT_DISPATCHED_NOTE = (
     "previous submit may have reached the vendor and was not finished; "
     "it was not sent again. Call retry_video_submit to confirm a manual retry."
+)
+VENDOR_FAILED_NOTE = (
+    "vendor judged it failed; a manual retry_video_submit(force_new=True) "
+    "is required to create a new one"
 )
 ORPHAN_RESULT_NOTE = (
     "result reached vendor but state was overwritten; manual check needed"
@@ -378,23 +384,27 @@ def _request_was_not_sent(exc: BaseException) -> bool:
     )
 
 
-def _terminal_vendor_rejection(exc: BaseException) -> bool:
-    """Vendor finished the task as failed or expired, or rejected it with 4xx."""
+def _vendor_judged_failed(exc: BaseException) -> bool:
     text = str(exc)
-    if "视频生成failed" in text or "视频生成expired" in text:
-        return True
-    response = getattr(exc, "response", None)
-    code = getattr(response, "status_code", None)
-    if isinstance(code, int) and 400 <= code < 500 and code not in (408, 429):
-        return True
-    return False
+    return "视频生成failed" in text or "视频生成expired" in text
 
 
 def _keep_dispatched_marker(exc: BaseException) -> bool:
-    """Keep the marker unless the generation was surely not accepted."""
-    if _request_was_not_sent(exc) or _terminal_vendor_rejection(exc):
-        return False
-    return True
+    """Clear the marker only when this attempt never issued HTTP.
+
+    Poll and download errors, vendor failed/expired, every 4xx, timeouts,
+    and unknown exceptions keep the marker. A plain confirm must not POST
+    again while it is set.
+    """
+    return not _request_was_not_sent(exc)
+
+
+def _blocked_message(node) -> str:
+    metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    error = metadata.get("submit_error")
+    if isinstance(error, str) and "force_new" in error:
+        return VENDOR_FAILED_NOTE
+    return SUBMIT_DISPATCHED_NOTE
 
 
 def _ledger_view(entry: dict) -> dict:
@@ -448,13 +458,27 @@ def _video_submit_params(
     return body
 
 
+class _SaveRejected(Exception):
+    """This node's compare-and-set lost. The savepoint rolls back."""
+
+
+class _ClaimLost(Exception):
+    """The submit stamp no longer matches. Do not write the node."""
+
+
 class GraphExecutor:
     """Run one node. The runner is invoked only after the gate allows it.
 
     ``video_adapter`` is the submit implementation for an authorized video
     confirm. ``None`` uses the registered adapter when that provider's API
     key is configured.
+
+    ``save_probe`` runs after ``_save`` reads stamps and before it writes,
+    and only when this connection is not already inside a transaction.
+    Tests use it to commit another connection's claim in that window.
     """
+
+    save_probe = None
 
     def __init__(
         self,
@@ -467,6 +491,9 @@ class GraphExecutor:
         self._video_adapter = video_adapter
         self.submissions: list[str] = []
         self._claim_stamps: dict[str, str] = {}
+        self._baselines: dict[int, dict[str, str]] = {}
+        self._retrying = False
+        self._force_new = False
 
     def run_node(self, project_id: str, node_id: str, params: Optional[dict] = None) -> dict:
         params = dict(params or {})
@@ -578,24 +605,33 @@ class GraphExecutor:
             call_confirmed=False,
         )
 
-    def confirm(self, project_id: str, node_id: str, *, retry: bool = False) -> dict:
+    def confirm(
+        self,
+        project_id: str,
+        node_id: str,
+        *,
+        retry: bool = False,
+        force_new: bool = False,
+    ) -> dict:
         """Accept a held video quote. This is the first ledger write for that call.
 
         The node is claimed (``awaiting_user`` to ``running``) before
         authorize. The video adapter submits only after that reservation is
         allowed. Spent and done follow a successful submit. A failed submit
-        returns the node to ``awaiting_user``. ``retry=True`` clears a
-        dispatched marker from an interrupted submit, then submits.
+        returns the node to ``awaiting_user``. A plain confirm never POSTs
+        while ``submit_dispatched`` is set. ``retry=True`` claims without
+        clearing that marker. ``force_new`` is honored only together with
+        retry, and drops ``vendor_task_id`` inside the claim transaction.
         """
+        if force_new and not retry:
+            raise _GateError("force_new is only valid on retry_video_submit")
         graph = self._load(project_id)
         node_id = self._node_id(graph, node_id)
         node = graph.node(node_id)
-        if retry:
-            self._clear_dispatched_marker(project_id, graph, node_id)
-            graph = self._load(project_id)
-            node = graph.node(node_id)
-        elif _dispatched(node) and node.status == NodeStatus.AWAITING_USER:
-            raise _GateError(SUBMIT_DISPATCHED_NOTE)
+        if retry and not _dispatched(node):
+            raise _GateError("node has no interrupted submit to retry")
+        if not retry and _dispatched(node) and node.status == NodeStatus.AWAITING_USER:
+            raise _GateError(_blocked_message(node))
         if node.status not in {NodeStatus.AWAITING_USER, NodeStatus.RUNNING}:
             raise _GateError("node is not awaiting confirmation")
         fields = node.metadata.get("pending_call")
@@ -604,68 +640,83 @@ class GraphExecutor:
         existing = self._awaiting_entry(project_id, node_id)
         if existing is not None:
             return self._held_budget(project_id, graph, node_id, existing)
-        quoted = self._open_quoted(project_id, node_id)
-        state = self._node_state_row(project_id, node_id)
-        if quoted is not None and state is not None and state["status"] == "ready":
+        self._retrying = retry
+        self._force_new = bool(force_new and retry)
+        try:
+            quoted = self._open_quoted(project_id, node_id)
+            state = self._node_state_row(project_id, node_id)
+            # A quote left reserved by a failed spend is the same row. Do not
+            # authorize a second one. ``ready`` is the raise_budget case.
+            if quoted is not None and (
+                state is None or state["status"] in {"ready", "awaiting_user", "running"}
+            ):
+                self._acquire_submit_claim(project_id, graph, node_id)
+                try:
+                    return self._finish(
+                        project_id,
+                        graph,
+                        node_id,
+                        fields,
+                        _ledger_view(quoted),
+                        call_confirmed=True,
+                    )
+                except Exception:
+                    self._abandon_submit_claim(project_id, node_id)
+                    raise
             self._acquire_submit_claim(project_id, graph, node_id)
             try:
+                request, duration, _quantity = self._request(fields)
+                view = ProjectBudget.authorize(
+                    self.conn,
+                    project_id,
+                    request,
+                    node_id=node_id,
+                    kind=fields.get("modality") or "video",
+                )
+                references, versions = self._context(project_id, fields)
+                if not view["allowed"]:
+                    # authorize may already have moved node_state off the claim
+                    # stamp. Write the graph back from this in-memory node.
+                    self._restore_awaiting(project_id, graph, node_id)
+                    return self._from_budget(
+                        project_id,
+                        graph,
+                        node_id,
+                        view,
+                        duration=duration,
+                        references=references,
+                        versions=versions,
+                        call_confirmed=True,
+                    )
                 return self._finish(
                     project_id,
                     graph,
                     node_id,
                     fields,
-                    _ledger_view(quoted),
+                    view,
                     call_confirmed=True,
                 )
             except Exception:
                 self._abandon_submit_claim(project_id, node_id)
                 raise
-        self._acquire_submit_claim(project_id, graph, node_id)
-        try:
-            request, duration, _quantity = self._request(fields)
-            view = ProjectBudget.authorize(
-                self.conn,
-                project_id,
-                request,
-                node_id=node_id,
-                kind=fields.get("modality") or "video",
-            )
-            references, versions = self._context(project_id, fields)
-            if not view["allowed"]:
-                # authorize already moved node_state to awaiting_user. The
-                # graph JSON is still running from the claim, so write that
-                # back without the claim stamp: the budget row is no longer
-                # the running stamp this claim stored.
-                self._restore_awaiting(project_id, graph, node_id)
-                return self._from_budget(
-                    project_id,
-                    graph,
-                    node_id,
-                    view,
-                    duration=duration,
-                    references=references,
-                    versions=versions,
-                    call_confirmed=True,
-                )
-            return self._finish(
-                project_id,
-                graph,
-                node_id,
-                fields,
-                view,
-                call_confirmed=True,
-            )
-        except Exception:
-            self._abandon_submit_claim(project_id, node_id)
-            raise
+        finally:
+            self._retrying = False
+            self._force_new = False
 
-    def retry_video_submit(self, project_id: str, node_id: str) -> dict:
-        """Confirm a manual retry of a submit that may have reached the vendor.
+    def retry_video_submit(
+        self,
+        project_id: str,
+        node_id: str,
+        force_new: bool = False,
+    ) -> dict:
+        """Manual retry of a submit that may have reached the vendor.
 
-        This is the only path that clears ``submit_dispatched``. The marker
-        is removed after this call starts, and then the normal confirm submits.
+        The marker stays set. A stored ``vendor_task_id`` is polled again.
+        A stored result URL is settled with no new POST. ``force_new=True``
+        drops the task id inside the claim and creates a new generation.
+        The default is False. A plain confirm never does either.
         """
-        return self.confirm(project_id, node_id, retry=True)
+        return self.confirm(project_id, node_id, retry=True, force_new=force_new)
 
     @staticmethod
     def recover_stale_submit_claims(conn) -> list[str]:
@@ -742,7 +793,7 @@ class GraphExecutor:
                 and isinstance(updated_at, str)
                 and updated_at < cutoff
             )
-            if stale and _dispatched(graph.node(node_id)):
+            if stale and _dispatched(graph.node(node_id)) and not self._retrying:
                 park = True
                 park_stamp = updated_at
             elif status == NodeStatus.RUNNING.value and not stale:
@@ -769,9 +820,7 @@ class GraphExecutor:
                 )
                 if changed.rowcount != 1:
                     raise _GateError("node submit is already in progress")
-                self._mark_submitting(graph, node_id)
-                self._save(project_id, graph)
-                self._remember_claim(project_id, node_id)
+                self._take_claimed_node(project_id, graph, node_id, now)
             elif status is None:
                 self.conn.execute(
                     """
@@ -780,9 +829,7 @@ class GraphExecutor:
                     """,
                     (project_id, node_id, NodeStatus.RUNNING.value, now),
                 )
-                self._mark_submitting(graph, node_id)
-                self._save(project_id, graph)
-                self._remember_claim(project_id, node_id)
+                self._take_claimed_node(project_id, graph, node_id, now)
             else:
                 changed = self.conn.execute(
                     """
@@ -800,13 +847,38 @@ class GraphExecutor:
                 )
                 if changed.rowcount != 1:
                     raise _GateError("node submit is already in progress")
-                self._mark_submitting(graph, node_id)
-                self._save(project_id, graph)
-                self._remember_claim(project_id, node_id)
+                self._take_claimed_node(project_id, graph, node_id, now)
         if park:
             self._claim_stamps[node_id] = park_stamp
             self._park_dispatched_attempt(project_id, graph, node_id)
             raise _GateError(SUBMIT_DISPATCHED_NOTE)
+
+    def _take_claimed_node(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        stamp: str,
+    ) -> None:
+        """Mark the node running and persist it in the claim transaction.
+
+        ``force_new`` drops the task id and any stored URL here, still inside
+        the claim transaction. The marker itself stays until a successful
+        done write replaces it.
+        """
+        self._mark_submitting(graph, node_id)
+        if self._force_new:
+            graph.update_metadata(node_id, vendor_task_id=None, result_obtained=None)
+        self._claim_stamps[node_id] = stamp
+        self._save(
+            project_id,
+            graph,
+            owned={node_id},
+            touch_state=False,
+            claim_node=node_id,
+            claim_stamp=stamp,
+        )
+        self._remember_claim(project_id, node_id)
 
     def _remember_claim(self, project_id: str, node_id: str) -> None:
         """Store the ``updated_at`` ``_save`` actually wrote for this claim."""
@@ -854,7 +926,16 @@ class GraphExecutor:
                 graph.update_metadata(node_id, submit_error=note)
             if not keep_dispatched:
                 graph.update_metadata(node_id, submit_dispatched=None, vendor_task_id=None)
-            self._save(project_id, graph, owned={node_id})
+            try:
+                self._save(
+                    project_id,
+                    graph,
+                    owned={node_id},
+                    claim_node=node_id,
+                    claim_stamp=stamp,
+                )
+            except _ClaimLost:
+                return
 
     def _park_dispatched_attempt(
         self,
@@ -879,43 +960,26 @@ class GraphExecutor:
             return
         if status == NodeStatus.RUNNING:
             graph.transition(node_id, NodeStatus.AWAITING_USER)
-        self._save(project_id, graph, owned={node_id})
+        self._save(project_id, graph, owned={node_id}, resume_pause=True)
 
     def _abandon_submit_claim(self, project_id: str, node_id: str) -> None:
-        """Reload the graph, then release only if this claim still owns the row."""
+        """Reload the graph, then release only if this claim still owns the row.
+
+        A marker that survived the failed attempt is kept. Abandon does not
+        clear it, so a later plain confirm still cannot POST.
+        """
         try:
             fresh = self._load(project_id)
         except _GateError:
             return
         if node_id not in fresh:
             return
-        self._release_submit_claim(project_id, fresh, node_id)
-
-    def _clear_dispatched_marker(
-        self,
-        project_id: str,
-        graph: DependencyGraph,
-        node_id: str,
-    ) -> None:
-        """Drop the marker after the user asks for a manual retry.
-
-        A live ``running`` claim is left in place. The graph JSON is saved
-        without touching ``node_state.updated_at``, so a stale claim stays
-        stale and the following confirm can take it.
-        """
-        node = graph.node(node_id)
-        if not _dispatched(node):
-            raise _GateError("node has no interrupted submit to retry")
-        state = self._node_state_row(project_id, node_id)
-        if (
-            state is not None
-            and state["status"] == NodeStatus.RUNNING.value
-            and isinstance(state["updated_at"], str)
-            and state["updated_at"] >= _claim_cutoff()
-        ):
-            raise _GateError("node submit is already in progress")
-        graph.update_metadata(node_id, submit_dispatched=None, submit_error=None)
-        self._save(project_id, graph, owned={node_id}, touch_state=False)
+        self._release_submit_claim(
+            project_id,
+            fresh,
+            node_id,
+            keep_dispatched=_dispatched(fresh.node(node_id)),
+        )
 
     def _persist_dispatched_marker(
         self,
@@ -930,7 +994,15 @@ class GraphExecutor:
         during the poll.
         """
         graph.update_metadata(node_id, submit_dispatched=True)
-        self._save(project_id, graph, owned={node_id}, touch_state=False)
+        stamp = self._claim_stamps.get(node_id)
+        self._save(
+            project_id,
+            graph,
+            owned={node_id},
+            touch_state=False,
+            claim_node=node_id,
+            claim_stamp=stamp,
+        )
 
     def _node_state_row(self, project_id: str, node_id: str):
         return self.conn.execute(
@@ -1008,7 +1080,7 @@ class GraphExecutor:
             submit_dispatched=True,
         )
         if not already_done:
-            self._save(project_id, graph, owned={node_id})
+            self._save(project_id, graph, owned={node_id}, lost_claim=True)
         body = self._pack(
             project_id,
             graph,
@@ -1048,10 +1120,12 @@ class GraphExecutor:
         )
 
     def raise_budget(self, project_id: str, entry_id: str, new_cap: float) -> dict:
-        view = ProjectBudget.raise_cap(self.conn, project_id, entry_id, new_cap)
         entry = LedgerStore.get(self.conn, entry_id)
         node_id = entry.get("node_id")
         graph = self._load(project_id)
+        if node_id and node_id in graph and _dispatched(graph.node(node_id)):
+            raise _GateError(_blocked_message(graph.node(node_id)))
+        view = ProjectBudget.raise_cap(self.conn, project_id, entry_id, new_cap)
         if not view["allowed"]:
             return self._from_budget(
                 project_id,
@@ -1459,13 +1533,36 @@ class GraphExecutor:
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
-        if (
+        obtained = None
+        if isinstance(result, dict):
+            candidate = result.get("result_id")
+            if isinstance(candidate, str) and _looks_like_url_or_path(candidate.strip()):
+                obtained = candidate.strip()
+        if obtained is None:
+            obtained = _submit_ref(result)
+        video_claim = (
             fields.get("modality") == "video"
             and call_confirmed
             and node_id in self._claim_stamps
-            and not self._claim_still_owned(project_id, node_id, view["entry_id"])
-        ):
+        )
+        if video_claim and not self._claim_still_owned(project_id, node_id, view["entry_id"]):
             return self._keep_orphaned_result(project_id, graph, node_id, result, view)
+        # The URL is committed before spent/done. If the spend transaction
+        # rolls back, the marker and this URL stay, and the quote stays reserved.
+        if video_claim and provider_called and isinstance(obtained, str):
+            graph.update_metadata(
+                node_id,
+                result_obtained=obtained,
+                submit_dispatched=True,
+            )
+            self._save(
+                project_id,
+                graph,
+                owned={node_id},
+                touch_state=False,
+                claim_node=node_id,
+                claim_stamp=self._claim_stamps.get(node_id),
+            )
         # Spent and done become visible together. The vendor call already
         # returned, so this transaction does not hold the claim across poll.
         with transaction(self.conn):
@@ -1483,7 +1580,16 @@ class GraphExecutor:
                 submit_dispatched=None,
                 vendor_task_id=None,
             )
-            self._save(project_id, graph, owned={node_id})
+            stamp = self._claim_stamps.get(node_id)
+            if video_claim and isinstance(stamp, str):
+                self._save(
+                    project_id,
+                    graph,
+                    claim_node=node_id,
+                    claim_stamp=stamp,
+                )
+            else:
+                self._save(project_id, graph)
         body = self._pack(
             project_id,
             graph,
@@ -1549,17 +1655,39 @@ class GraphExecutor:
         except Exception as exc:
             self._abort_reserved_video(project_id, graph, node_id, exc)
         meta = graph.node(node_id).metadata
-        if isinstance(meta, dict) and meta.get("vendor_task_id"):
-            params["vendor_task_id"] = meta["vendor_task_id"]
+        if not isinstance(meta, dict):
+            meta = {}
+        if not self._force_new:
+            stored = meta.get("result_obtained")
+            if isinstance(stored, str) and _looks_like_url_or_path(stored.strip()):
+                merged = dict(prepared) if isinstance(prepared, dict) else {}
+                merged["provider_called"] = True
+                merged["result_id"] = stored.strip()
+                merged["model_id"] = spec.id
+                merged["generation_mode"] = params.get("generation_mode")
+                merged["duration"] = params.get("duration")
+                return merged, True
+            task_id = meta.get("vendor_task_id")
+            if isinstance(task_id, str) and task_id.strip():
+                params["vendor_task_id"] = task_id.strip()
         # Commit the marker before the vendor call. A kill during poll leaves
-        # it set so a later confirm does not submit a second time.
-        self._persist_dispatched_marker(project_id, graph, node_id)
+        # it set so a later confirm does not submit a second time. Retry does
+        # not clear it first; this write only adds it when it is missing.
+        if not _dispatched(graph.node(node_id)):
+            self._persist_dispatched_marker(project_id, graph, node_id)
 
         def _on_task(task_id: str) -> None:
             if not isinstance(task_id, str) or not task_id.strip():
                 return
             graph.update_metadata(node_id, vendor_task_id=task_id.strip(), submit_dispatched=True)
-            self._save(project_id, graph, owned={node_id}, touch_state=False)
+            self._save(
+                project_id,
+                graph,
+                owned={node_id},
+                touch_state=False,
+                claim_node=node_id,
+                claim_stamp=self._claim_stamps.get(node_id),
+            )
 
         params["on_task"] = _on_task
         try:
@@ -1618,10 +1746,15 @@ class GraphExecutor:
         self._release_quoted_reservation(project_id, node_id)
         message = _redact_secret(str(exc).strip() or exc.__class__.__name__)
         keep = _keep_dispatched_marker(exc)
-        if keep:
+        vendor_failed = _vendor_judged_failed(exc)
+        if vendor_failed:
+            message = VENDOR_FAILED_NOTE
+        elif keep:
             message = f"{message}; {SUBMIT_DISPATCHED_NOTE}"
         graph.update_metadata(node_id, submit_error=message)
         self._release_submit_claim(project_id, graph, node_id, keep_dispatched=keep)
+        if vendor_failed:
+            raise _GateError(message) from None
         raise _GateError(f"video submit failed: {message}") from None
 
     def _submit(self, call: dict) -> Any:
@@ -1858,7 +1991,24 @@ class GraphExecutor:
         document = GraphStore.load(self.conn, project_id)
         if not isinstance(document, dict) or "nodes" not in document:
             raise _GateError("project has no dependency graph")
-        return DependencyGraph.from_dict(document)
+        graph = DependencyGraph.from_dict(document)
+        self._baselines[id(graph)] = {
+            node_id: dump_json(graph.node(node_id).to_dict())
+            for node_id in graph.topological_order()
+        }
+        return graph
+
+    def _changed_nodes(self, graph: DependencyGraph) -> list[str]:
+        """Nodes this in-memory graph changed after ``_load``."""
+        base = self._baselines.get(id(graph))
+        order = list(graph.topological_order())
+        if base is None:
+            return order
+        return [
+            node_id
+            for node_id in order
+            if dump_json(graph.node(node_id).to_dict()) != base.get(node_id)
+        ]
 
     def _save(
         self,
@@ -1867,77 +2017,214 @@ class GraphExecutor:
         *,
         owned: Optional[set] = None,
         touch_state: bool = True,
+        claim_node: Optional[str] = None,
+        claim_stamp: Optional[str] = None,
+        lost_claim: bool = False,
+        resume_pause: bool = False,
     ) -> None:
-        """Persist the graph without clobbering another node's live submit.
+        """Write only nodes this operation owns, one compare-and-set each.
 
-        A node whose database row is ``running`` or whose stored metadata has
-        ``submit_dispatched`` keeps that claim unless this save owns the node.
-        ``touch_state`` false updates the graph JSON only, so a marker write
-        does not move the claim stamp.
+        The graph document is never replaced. Each owned node is patched with
+        ``json_set`` on that array element, in the same transaction as the
+        ``node_state`` predicate. A node that is running in memory but already
+        carries ``submit_dispatched`` in the database is not a target unless
+        this call owns the claim stamp. ``save_probe`` runs after the stamp
+        read and before the write when this connection is not in a transaction.
         """
-        owned = set(owned or ())
-        snapshot = graph.to_dict()
-        stored = GraphStore.load(self.conn, project_id)
-        stored_nodes = {}
-        if isinstance(stored, dict):
-            for item in stored.get("nodes") or []:
-                if isinstance(item, dict) and isinstance(item.get("id"), str):
-                    stored_nodes[item["id"]] = item
-        running = {
-            row["node_id"]
-            for row in self.conn.execute(
-                "SELECT node_id, status FROM node_state WHERE project_id = ? AND status = ?",
-                (project_id, NodeStatus.RUNNING.value),
-            )
-        }
-        protected: set[str] = set()
-        for node in snapshot.get("nodes") or []:
-            node_id = node.get("id")
-            if not isinstance(node_id, str) or node_id in owned or node_id not in graph:
-                continue
-            previous = stored_nodes.get(node_id) or {}
-            previous_meta = previous.get("metadata") if isinstance(previous.get("metadata"), dict) else {}
-            holds = (
-                node_id in running
-                or previous.get("status") == NodeStatus.RUNNING.value
-                or bool(previous_meta.get(SUBMIT_DISPATCHED))
-            )
-            if not holds:
-                continue
-            memory = graph.node(node_id)
-            if memory.status == NodeStatus.RUNNING or _dispatched(memory):
-                continue
-            protected.add(node_id)
-            if node_id in running or previous.get("status") == NodeStatus.RUNNING.value:
-                node["status"] = NodeStatus.RUNNING.value
-            elif previous.get("status"):
-                node["status"] = previous["status"]
-            merged = dict(node.get("metadata") or {})
-            if previous_meta.get(SUBMIT_DISPATCHED):
-                merged[SUBMIT_DISPATCHED] = previous_meta[SUBMIT_DISPATCHED]
-            if previous_meta.get("vendor_task_id"):
-                merged["vendor_task_id"] = previous_meta["vendor_task_id"]
-            node["metadata"] = merged
-        GraphStore.save(self.conn, project_id, snapshot)
-        if not touch_state:
+        if owned is not None:
+            targets = [node_id for node_id in owned if node_id in graph]
+        else:
+            targets = self._changed_nodes(graph)
+        if not targets:
             return
-        now = utc_now()
-        with transaction(self.conn):
-            for node_id in graph.topological_order():
-                if node_id in protected:
-                    continue
-                require_id(node_id, "node_id")
-                self.conn.execute(
-                    """
-                    INSERT INTO node_state (project_id, node_id, status, pinned, updated_at)
-                    VALUES (?, ?, ?, 0, ?)
-                    ON CONFLICT(project_id, node_id) DO UPDATE SET
-                        status = excluded.status,
-                        updated_at = excluded.updated_at
-                    WHERE node_state.pinned = 0
-                    """,
-                    (project_id, node_id, graph.node(node_id).status.value, now),
+        selected: dict[str, Optional[str]] = {}
+        for node_id in targets:
+            row = self._node_state_row(project_id, node_id)
+            selected[node_id] = None if row is None else row["updated_at"]
+        probe = GraphExecutor.save_probe
+        if probe is not None and not self.conn.in_transaction:
+            probe(self)
+        for node_id in targets:
+            self._persist_owned_node(
+                project_id,
+                graph,
+                node_id,
+                touch_state=touch_state,
+                claim_node=claim_node,
+                claim_stamp=claim_stamp,
+                selected_stamp=selected.get(node_id),
+                lost_claim=lost_claim,
+                resume_pause=resume_pause,
+            )
+
+    def _persist_owned_node(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        *,
+        touch_state: bool,
+        claim_node: Optional[str],
+        claim_stamp: Optional[str],
+        selected_stamp: Optional[str],
+        lost_claim: bool,
+        resume_pause: bool,
+    ) -> None:
+        try:
+            with transaction(self.conn):
+                self._write_owned_node(
+                    project_id,
+                    graph,
+                    node_id,
+                    touch_state=touch_state,
+                    claim_node=claim_node,
+                    claim_stamp=claim_stamp,
+                    selected_stamp=selected_stamp,
+                    lost_claim=lost_claim,
+                    resume_pause=resume_pause,
                 )
+        except _SaveRejected:
+            return
+
+    def _write_owned_node(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        *,
+        touch_state: bool,
+        claim_node: Optional[str],
+        claim_stamp: Optional[str],
+        selected_stamp: Optional[str],
+        lost_claim: bool,
+        resume_pause: bool,
+    ) -> None:
+        require_id(project_id, "project_id")
+        require_id(node_id, "node_id")
+        node = graph.node(node_id)
+        status = node.status.value
+        payload = dump_json(node.to_dict())
+        now = utc_now()
+        is_claim = claim_node == node_id and isinstance(claim_stamp, str)
+        if claim_node == node_id and not isinstance(claim_stamp, str):
+            raise _ClaimLost()
+        if is_claim:
+            if touch_state:
+                changed = self.conn.execute(
+                    """
+                    UPDATE node_state
+                    SET status = ?, updated_at = ?
+                    WHERE project_id = ? AND node_id = ? AND updated_at = ? AND pinned = 0
+                    """,
+                    (status, now, project_id, node_id, claim_stamp),
+                )
+            else:
+                changed = self.conn.execute(
+                    """
+                    UPDATE node_state
+                    SET updated_at = updated_at
+                    WHERE project_id = ? AND node_id = ? AND updated_at = ? AND pinned = 0
+                    """,
+                    (project_id, node_id, claim_stamp),
+                )
+            if changed.rowcount != 1 or self._patch_node_json(project_id, node_id, payload, owner=True) != 1:
+                raise _ClaimLost()
+            if touch_state:
+                self._claim_stamps[node_id] = now
+            return
+        if lost_claim:
+            changed = self.conn.execute(
+                """
+                UPDATE node_state
+                SET status = ?, updated_at = ?
+                WHERE project_id = ? AND node_id = ? AND status = ? AND pinned = 0
+                """,
+                (status, now, project_id, node_id, NodeStatus.RUNNING.value),
+            )
+            if changed.rowcount != 1 or self._patch_node_json(project_id, node_id, payload, owner=True) != 1:
+                raise _SaveRejected()
+            return
+        if resume_pause:
+            if not isinstance(selected_stamp, str):
+                inserted = self._insert_node_state(project_id, node_id, status, now)
+                if inserted != 1 or self._patch_node_json(project_id, node_id, payload, owner=True) != 1:
+                    raise _SaveRejected()
+                return
+            changed = self.conn.execute(
+                """
+                UPDATE node_state
+                SET status = ?, updated_at = ?
+                WHERE project_id = ? AND node_id = ? AND updated_at = ? AND pinned = 0
+                """,
+                (status, now, project_id, node_id, selected_stamp),
+            )
+            if changed.rowcount != 1 or self._patch_node_json(project_id, node_id, payload, owner=True) != 1:
+                raise _SaveRejected()
+            return
+        if selected_stamp is None:
+            if self._insert_node_state(project_id, node_id, status, now) != 1:
+                raise _SaveRejected()
+            if self._patch_node_json(project_id, node_id, payload, owner=False) != 1:
+                raise _SaveRejected()
+            return
+        changed = self.conn.execute(
+            """
+            UPDATE node_state
+            SET status = ?, updated_at = ?
+            WHERE project_id = ? AND node_id = ? AND updated_at = ? AND pinned = 0
+              AND status != 'running'
+            """,
+            (status, now, project_id, node_id, selected_stamp),
+        )
+        if changed.rowcount != 1 or self._patch_node_json(project_id, node_id, payload, owner=False) != 1:
+            raise _SaveRejected()
+
+    def _insert_node_state(self, project_id: str, node_id: str, status: str, now: str) -> int:
+        inserted = self.conn.execute(
+            """
+            INSERT INTO node_state (project_id, node_id, status, pinned, updated_at)
+            SELECT ?, ?, ?, 0, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM node_state WHERE project_id = ? AND node_id = ?
+            )
+            """,
+            (project_id, node_id, status, now, project_id, node_id),
+        )
+        return inserted.rowcount
+
+    def _patch_node_json(self, project_id: str, node_id: str, payload: str, *, owner: bool) -> int:
+        """Replace one node object. ``owner`` may overwrite a running or marked node."""
+        if owner:
+            guard = "1 = 1"
+        else:
+            guard = """
+                COALESCE(json_extract(e.value, '$.status'), '') != 'running'
+                AND COALESCE(json_extract(e.value, '$.metadata.submit_dispatched'), 0) = 0
+            """
+        updated = self.conn.execute(
+            f"""
+            UPDATE project
+            SET graph_json = (
+              SELECT json_set(
+                project.graph_json,
+                '$.nodes[' || e.key || ']',
+                json(?)
+              )
+              FROM json_each(project.graph_json, '$.nodes') AS e
+              WHERE json_extract(e.value, '$.id') = ?
+                AND ({guard})
+            ),
+            updated_at = ?
+            WHERE id = ?
+              AND EXISTS (
+                SELECT 1 FROM json_each(project.graph_json, '$.nodes') AS e
+                WHERE json_extract(e.value, '$.id') = ?
+                  AND ({guard})
+              )
+            """,
+            (payload, node_id, utc_now(), project_id, node_id),
+        )
+        return updated.rowcount
 
     def _node_id(self, graph: DependencyGraph, node_id: str) -> str:
         if node_id not in graph:

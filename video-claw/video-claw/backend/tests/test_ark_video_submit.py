@@ -66,8 +66,10 @@ def _no_live_video(monkeypatch):
     monkeypatch.setattr(video_seedance.requests, "post", explode)
     monkeypatch.setattr(video_seedance.requests, "get", explode)
     submitted.clear()
+    GraphExecutor.save_probe = None
     yield
     submitted.clear()
+    GraphExecutor.save_probe = None
 
 
 def _ready_video(conn, cap=200, shot_duration=30, text="@林夏 走进教室"):
@@ -931,34 +933,50 @@ def test_uncertain_seedance_failures_keep_the_marker(conn, monkeypatch):
             assert len(posts) == 1
 
 
-def test_vendor_failed_clears_the_marker(conn, monkeypatch):
+@pytest.mark.parametrize("status_name", ["failed", "expired"])
+def test_vendor_failed_keeps_the_marker_until_force_new(conn, monkeypatch, status_name):
     monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
     project_id, hero = _ready_video(conn)
     _portrait(conn, hero["id"])
     GraphExecutor(conn).run_node(project_id, "video")
-    calls = _count_ark_submit(monkeypatch)
-    attempts = {"n": 0}
+    posts = []
 
     def fake_post(_url, **_kwargs):
-        attempts["n"] += 1
-        return _Http({"id": f"task-{attempts['n']}"})
+        posts.append(1)
+        return _Http({"id": f"task-{len(posts)}"})
 
     def fake_get(_url, **kwargs):
         if kwargs.get("stream"):
             return _Http({})
-        if attempts["n"] == 1:
-            return _Http({"status": "failed", "error": {"message": "rejected prompt"}})
+        if len(posts) == 1:
+            return _Http({"status": status_name, "error": {"message": "rejected prompt"}})
         return _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}})
 
     _install_seedance_http(monkeypatch, post=fake_post, get=fake_get)
     with pytest.raises(StorageError) as failed:
         GraphExecutor(conn).confirm(project_id, "video")
-    assert "failed" in str(failed.value)
-    assert _metadata(conn, project_id).get("submit_dispatched") is None
-    assert len(calls) == 1
-    done = GraphExecutor(conn).confirm(project_id, "video")
+    assert str(failed.value) == (
+        "vendor judged it failed; a manual retry_video_submit(force_new=True) "
+        "is required to create a new one"
+    )
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["vendor_task_id"] == "task-1"
+    assert _status(conn, project_id) == "awaiting_user"
+    assert posts == [1]
+    with pytest.raises(StorageError) as blocked:
+        GraphExecutor(conn).confirm(project_id, "video")
+    assert str(blocked.value) == str(failed.value)
+    assert posts == [1]
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).retry_video_submit(project_id, "video")
+    assert posts == [1]
+    assert _metadata(conn, project_id)["vendor_task_id"] == "task-1"
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    done = GraphExecutor(conn).retry_video_submit(project_id, "video", force_new=True)
     assert done["status"] == "done"
-    assert len(calls) == 2
+    assert posts == [1, 1]
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
 
 
 def test_other_node_save_does_not_double_spend(conn):
@@ -1071,3 +1089,286 @@ def test_replaced_claim_stamp_does_not_spend_the_returned_url(conn):
     assert meta["submit_dispatched"] is True
     assert not any(row["status"] == SPENT for row in _video_rows(conn, project_id))
     assert _status(conn, project_id) == "awaiting_user"
+
+
+@pytest.mark.parametrize(
+    "label,poll_status",
+    [("poll-400", 400), ("poll-404", 404)],
+)
+def test_poll_client_errors_keep_the_marker_and_block_confirm(conn, monkeypatch, label, poll_status):
+    monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    posts = []
+
+    def fake_post(_url, **_kwargs):
+        posts.append(label)
+        return _Http({"id": f"task-{label}"})
+
+    def fake_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({})
+        return _Http({"error": label}, status=poll_status)
+
+    _install_seedance_http(monkeypatch, post=fake_post, get=fake_get)
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["vendor_task_id"] == f"task-{label}"
+    assert _status(conn, project_id) == "awaiting_user"
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    assert posts == [label]
+
+
+def test_download_forbidden_keeps_the_marker_and_blocks_confirm(conn, monkeypatch):
+    monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    posts = []
+
+    def fake_post(_url, **_kwargs):
+        posts.append(1)
+        return _Http({"id": "task-download-403"})
+
+    def fake_get(_url, **kwargs):
+        if kwargs.get("stream"):
+            return _Http({}, status=403)
+        return _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}})
+
+    _install_seedance_http(monkeypatch, post=fake_post, get=fake_get)
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["vendor_task_id"] == "task-download-403"
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    assert posts == [1]
+
+
+@pytest.mark.parametrize(
+    "code,body,task_id",
+    [
+        (400, {"id": "task-400", "error": "bad request"}, "task-400"),
+        (409, {"error": "conflict"}, None),
+        (499, {"id": "task-499"}, "task-499"),
+    ],
+)
+def test_post_client_errors_keep_the_marker(conn, monkeypatch, code, body, task_id):
+    monkeypatch.setattr(Config, "ARK_API_KEY", "unit-test-key")
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    posts = []
+
+    def fake_post(_url, **_kwargs):
+        posts.append(code)
+        return _Http(body, status=code)
+
+    _install_seedance_http(
+        monkeypatch,
+        post=fake_post,
+        get=lambda _url, **_kwargs: _Http({"status": "succeeded", "content": {"video_url": RESULT_URL}}),
+    )
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta.get("vendor_task_id") == task_id
+    assert _status(conn, project_id) == "awaiting_user"
+    with pytest.raises(StorageError):
+        GraphExecutor(conn).confirm(project_id, "video")
+    assert posts == [code]
+
+
+def test_save_probe_cannot_lose_another_connections_claim(conn):
+    project_id, _hero = _ready_video(conn)
+    stored = GraphStore.load(conn, project_id)
+    stored["nodes"].append(
+        {
+            "id": "script",
+            "kind": "script",
+            "episode_id": None,
+            "status": "pending",
+            "version": 0,
+            "input_versions": {},
+            "pinned": False,
+            "label": "",
+            "metadata": {"text": "开场"},
+        }
+    )
+    GraphStore.save(conn, project_id, stored)
+    GraphExecutor(conn).run_node(project_id, "video")
+    executor = GraphExecutor(conn)
+    graph = executor._load(project_id)
+    graph.update_metadata("script", text="改了")
+    data_dir = Database.data_dir_of(conn)
+
+    def probe(_executor):
+        other = Database.connect(data_dir)
+        try:
+            document = GraphStore.load(other, project_id)
+            for node in document["nodes"]:
+                if node["id"] == "video":
+                    node["status"] = "running"
+                    node["metadata"]["submit_dispatched"] = True
+                    node["metadata"]["vendor_task_id"] = "task-other"
+            GraphStore.save(other, project_id, document)
+            other.execute(
+                """
+                UPDATE node_state SET status = ?, updated_at = ?
+                WHERE project_id = ? AND node_id = ?
+                """,
+                ("running", "2099-01-01T00:00:00.000000Z", project_id, "video"),
+            )
+        finally:
+            other.close()
+
+    GraphExecutor.save_probe = probe
+    executor._save(project_id, graph)
+    GraphExecutor.save_probe = None
+    video = _metadata(conn, project_id, "video")
+    assert video["submit_dispatched"] is True
+    assert video["vendor_task_id"] == "task-other"
+    assert _status(conn, project_id, "video") == "running"
+    script = _metadata(conn, project_id, "script")
+    assert script["text"] == "改了"
+    state = conn.execute(
+        "SELECT status FROM node_state WHERE project_id = ? AND node_id = ?",
+        (project_id, "video"),
+    ).fetchone()
+    assert state["status"] == "running"
+
+
+def test_memory_running_does_not_wipe_a_stored_marker(conn):
+    project_id, _hero = _ready_video(conn)
+    GraphExecutor(conn).run_node(project_id, "video")
+    executor = GraphExecutor(conn)
+    memory = executor._load(project_id)
+    document = GraphStore.load(conn, project_id)
+    for node in document["nodes"]:
+        if node["id"] == "video":
+            node["metadata"]["submit_dispatched"] = True
+            node["metadata"]["vendor_task_id"] = "task-db"
+    GraphStore.save(conn, project_id, document)
+    memory.transition("video", "running")
+    executor._save(project_id, memory)
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["vendor_task_id"] == "task-db"
+    assert _status(conn, project_id) == "awaiting_user"
+
+
+def test_retry_does_not_clear_the_marker_before_the_claim(conn):
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+
+    class ResumeAdapter:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, spec, params, *, transport=None):
+            self.calls.append(params.get("vendor_task_id"))
+            on_task = params.get("on_task")
+            if not params.get("vendor_task_id"):
+                on_task("task-1")
+                raise RuntimeError("poll blew up")
+            return RESULT_URL
+
+    adapter = ResumeAdapter()
+    with pytest.raises(StorageError):
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    assert _metadata(conn, project_id)["vendor_task_id"] == "task-1"
+    seen = []
+    original = GraphExecutor._save
+
+    def tracing(self, project, graph, **kwargs):
+        if project == project_id:
+            meta = _metadata(self.conn, project)
+            seen.append(
+                {
+                    "marker": meta.get("submit_dispatched"),
+                    "task": meta.get("vendor_task_id"),
+                    "touch_state": kwargs.get("touch_state", True),
+                }
+            )
+        return original(self, project, graph, **kwargs)
+
+    GraphExecutor._save = tracing
+    try:
+        done = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(project_id, "video")
+    finally:
+        GraphExecutor._save = original
+    assert done["status"] == "done"
+    assert adapter.calls == [None, "task-1"]
+    assert seen
+    assert all(item["marker"] is True for item in seen)
+    claim_writes = [item for item in seen if item["touch_state"] is False]
+    assert claim_writes
+    assert all(item["task"] == "task-1" for item in claim_writes)
+
+
+def test_stored_url_survives_a_failed_spend_and_is_not_posted_again(conn, monkeypatch):
+    from models.middle.budget import ProjectBudget
+
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    adapter = RecordingAdapter()
+    real = ProjectBudget.record_actual
+
+    def boom(connection, project, entry_id, actual):
+        monkeypatch.setattr(ProjectBudget, "record_actual", real)
+        raise StorageError("ledger down")
+
+    monkeypatch.setattr(ProjectBudget, "record_actual", boom)
+    with pytest.raises(StorageError, match="ledger down"):
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    meta = _metadata(conn, project_id)
+    assert meta["submit_dispatched"] is True
+    assert meta["result_obtained"] == RESULT_URL
+    rows = _video_rows(conn, project_id)
+    assert len(rows) == 1
+    assert rows[0]["status"] == QUOTED
+    assert rows[0]["actual_amount"] is None
+    quoted_id = rows[0]["id"]
+    assert not any(row["status"] == SPENT for row in rows)
+    with pytest.raises(StorageError):
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert len(adapter.calls) == 1
+    done = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(project_id, "video")
+    assert done["status"] == "done"
+    assert done["result_id"] == RESULT_URL
+    assert len(adapter.calls) == 1
+    rows = _video_rows(conn, project_id)
+    assert [row["id"] for row in rows] == [quoted_id]
+    assert rows[0]["status"] == SPENT
+    assert rows[0]["actual_amount"] == 70.0
+    assert not any(row["status"] == QUOTED for row in rows)
+
+
+def test_raise_budget_refuses_when_the_marker_is_set(conn):
+    project_id, _hero = _ready_video(conn, cap=10)
+    GraphExecutor(conn).run_node(project_id, "video")
+    held = GraphExecutor(conn).confirm(project_id, "video")
+    assert held["gate"] == "budget"
+    document = GraphStore.load(conn, project_id)
+    for node in document["nodes"]:
+        if node["id"] == "video":
+            node["metadata"]["submit_dispatched"] = True
+            node["metadata"]["vendor_task_id"] = "task-budget"
+    GraphStore.save(conn, project_id, document)
+    cap = conn.execute("SELECT budget_cap FROM project WHERE id = ?", (project_id,)).fetchone()[0]
+    with pytest.raises(StorageError) as refused:
+        GraphExecutor(conn).raise_budget(project_id, held["entry_id"], 500)
+    assert "retry_video_submit" in str(refused.value)
+    assert conn.execute("SELECT budget_cap FROM project WHERE id = ?", (project_id,)).fetchone()[0] == cap
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    assert _metadata(conn, project_id)["vendor_task_id"] == "task-budget"
+    assert _video_rows(conn, project_id)[0]["status"] == AWAITING_USER

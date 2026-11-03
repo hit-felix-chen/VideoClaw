@@ -26,6 +26,21 @@ logger = logging.getLogger(__name__)
 # the caller instead of being reclaimed while it is still polling.
 SUBMIT_DEADLINE_SECONDS = 20 * 60
 
+
+def _response_task_id(resp) -> Optional[str]:
+    """Task id carried on a non-OK create response, if the body has one."""
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    task_id = data.get("id")
+    if isinstance(task_id, str) and task_id.strip():
+        return task_id.strip()
+    return None
+
+
 class SeedanceVideoClient:
     """
     Seedance 视频生成客户端（字节跳动 ARK）
@@ -80,7 +95,14 @@ class SeedanceVideoClient:
             raise TimeoutError("Seedance 视频生成超时")
         kwargs["post_timeout"] = min(self.timeout, remaining)
         # 1. 提交任务。POST 的超时不能超过整次 submit 还剩的时间。
-        task_id = self._submit_task(prompt, image_path, model, duration, **kwargs)
+        # 4xx 也可能已经创建了任务。响应体里有 id 时先交给 on_task，再抛错。
+        try:
+            task_id = self._submit_task(prompt, image_path, model, duration, **kwargs)
+        except Exception as exc:
+            leaked = getattr(exc, "task_id", None)
+            if callable(on_task) and isinstance(leaked, str) and leaked.strip():
+                on_task(leaked.strip())
+            raise
         if callable(on_task):
             on_task(task_id)
         self._check_deadline(deadline, task_id)
@@ -186,7 +208,13 @@ class SeedanceVideoClient:
         
         if not resp.ok:
             logger.error(f"Seedance 提交失败: {resp.text}")
-            resp.raise_for_status()
+            task_id = _response_task_id(resp)
+            try:
+                resp.raise_for_status()
+            except Exception as exc:
+                if task_id:
+                    exc.task_id = task_id
+                raise
             
         data = resp.json()
         task_id = data.get("id")
