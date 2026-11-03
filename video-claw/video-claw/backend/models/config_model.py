@@ -611,6 +611,275 @@ def get_model_config(model: str) -> dict[str, Any]:
     }
 
 
+class CostEstimate:
+    """Pre-call cost range for reference images and video.
+
+    Inputs are the session's chosen model ids, the number of reference
+    scenes/assets (one per storyboard segment), and the sum of
+    ``segment.total_duration`` for each episode. The result is ``by_episode``,
+    ``total``, and ``unknown_models``.
+
+    Prices are ``price_per_image`` and ``price_per_second`` on the exact
+    ``MODEL_CONFIG`` entry. Amounts are unlabeled: the registry has no currency
+    field. A model that lacks the price for a quantity it would actually bill
+    is listed in ``unknown_models`` and left out of the total. It is never
+    priced as zero.
+    """
+
+    # Image cost is a range of 1 to 6 calls per asset: _generate_one in
+    # character_agent.py loops up to max_iterations = 3, and each pass can
+    # call the image API twice through the doctor rewrite.
+    MIN_IMAGE_CALLS_PER_ASSET = 1
+    MAX_IMAGE_CALLS_PER_ASSET = 6
+
+    # video_agent bills seg.get("total_duration", 10) when the field is absent.
+    DEFAULT_SEGMENT_DURATION_SECONDS = 10.0
+
+    @staticmethod
+    def estimate(
+        model_ids: dict[str, str],
+        episodes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Price ``episodes`` of ``{episode_number, asset_count, duration_seconds}``.
+
+        ``model_ids`` uses ``image`` (``price_per_image``) and ``video``
+        (``price_per_second``).
+        """
+        if not isinstance(model_ids, dict):
+            model_ids = {}
+        if not isinstance(episodes, list):
+            episodes = []
+
+        image_model = str(model_ids.get("image") or "").strip()
+        video_model = str(model_ids.get("video") or "").strip()
+        unknown: list[str] = []
+        rows: list[dict[str, Any]] = []
+        incomplete = False
+        total_min = 0.0
+        total_max = 0.0
+
+        for index, episode in enumerate(episodes, start=1):
+            if not isinstance(episode, dict):
+                continue
+            asset_count = CostEstimate._count(episode.get("asset_count"))
+            duration = CostEstimate._seconds(episode.get("duration_seconds"))
+            image_price = CostEstimate._priced_unit(
+                image_model, "price_per_image", asset_count > 0, unknown
+            )
+            video_price = CostEstimate._priced_unit(
+                video_model, "price_per_second", duration > 0, unknown
+            )
+            image = CostEstimate._image_cost(asset_count, image_price)
+            video = CostEstimate._video_cost(duration, video_price)
+            episode_total = CostEstimate._sum_costs(image, video)
+            if episode_total is None:
+                incomplete = True
+            else:
+                total_min += episode_total["min"]
+                total_max += episode_total["max"]
+            rows.append({
+                "episode_number": episode.get("episode_number", index),
+                "asset_count": asset_count,
+                "duration_seconds": CostEstimate._money(duration),
+                "image": image,
+                "video": video,
+                "total": episode_total,
+            })
+
+        return {
+            "by_episode": rows,
+            "total": None if incomplete else {
+                "min": CostEstimate._money(total_min),
+                "max": CostEstimate._money(total_max),
+            },
+            "unknown_models": unknown,
+        }
+
+    @staticmethod
+    def from_session(
+        meta: dict[str, Any],
+        artifacts: dict[str, Any],
+        video_model: str,
+    ) -> dict[str, Any]:
+        """Build the estimate from a session meta dict and its artifacts.
+
+        Reference scenes are the storyboard segments (one image each). When
+        the storyboard is missing, ``reference_generation.scenes`` is used and
+        contributes no duration. The image model matches reference generation:
+        ``image_it2i_model`` when character or setting assets exist to use as
+        refs, otherwise ``image_t2i_model``.
+        """
+        meta = meta if isinstance(meta, dict) else {}
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        return CostEstimate.estimate(
+            {
+                "image": CostEstimate._reference_image_model(meta, artifacts),
+                "video": str(video_model or "").strip(),
+            },
+            CostEstimate._episodes(artifacts),
+        )
+
+    @staticmethod
+    def _reference_image_model(meta: dict[str, Any], artifacts: dict[str, Any]) -> str:
+        t2i = str(meta.get("image_t2i_model") or "").strip()
+        it2i = str(meta.get("image_it2i_model") or "").strip()
+        if CostEstimate._has_character_assets(artifacts) and it2i:
+            return it2i
+        return t2i or it2i
+
+    @staticmethod
+    def _has_character_assets(artifacts: dict[str, Any]) -> bool:
+        design = artifacts.get("character_design")
+        if not isinstance(design, dict):
+            return False
+        for key in ("characters", "settings"):
+            items = design.get(key)
+            if isinstance(items, list) and any(isinstance(item, dict) for item in items):
+                return True
+        return False
+
+    @staticmethod
+    def _episodes(artifacts: dict[str, Any]) -> list[dict[str, Any]]:
+        storyboard = artifacts.get("storyboard")
+        episodes = storyboard.get("episodes") if isinstance(storyboard, dict) else None
+        if isinstance(episodes, list) and episodes:
+            return CostEstimate._episodes_from_storyboard(episodes)
+        reference = artifacts.get("reference_generation")
+        scenes = reference.get("scenes") if isinstance(reference, dict) else None
+        if isinstance(scenes, list) and scenes:
+            return CostEstimate._episodes_from_scenes(scenes)
+        return []
+
+    @staticmethod
+    def _episodes_from_storyboard(episodes: list) -> list[dict[str, Any]]:
+        rows = []
+        for index, episode in enumerate(episodes, start=1):
+            if not isinstance(episode, dict):
+                continue
+            segments = episode.get("segments")
+            if not isinstance(segments, list):
+                segments = []
+            asset_count = 0
+            duration = 0.0
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                asset_count += 1
+                duration += CostEstimate._segment_duration(segment)
+            rows.append({
+                "episode_number": episode.get("episode_number", index),
+                "asset_count": asset_count,
+                "duration_seconds": duration,
+            })
+        return rows
+
+    @staticmethod
+    def _segment_duration(segment: dict[str, Any]) -> float:
+        if "total_duration" not in segment or segment.get("total_duration") is None:
+            return CostEstimate.DEFAULT_SEGMENT_DURATION_SECONDS
+        return CostEstimate._seconds(segment.get("total_duration"))
+
+    @staticmethod
+    def _episodes_from_scenes(scenes: list) -> list[dict[str, Any]]:
+        order: list[Any] = []
+        counts: dict[Any, int] = {}
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            episode_number = scene.get("episode", 1)
+            if episode_number not in counts:
+                order.append(episode_number)
+                counts[episode_number] = 0
+            counts[episode_number] += 1
+        return [
+            {
+                "episode_number": episode_number,
+                "asset_count": counts[episode_number],
+                "duration_seconds": 0.0,
+            }
+            for episode_number in order
+        ]
+
+    @staticmethod
+    def _priced_unit(
+        model_id: str,
+        field: str,
+        used: bool,
+        unknown: list[str],
+    ) -> Optional[float]:
+        if not used:
+            return None
+        price = CostEstimate._unit_price(model_id, field)
+        if price is None and model_id and model_id not in unknown:
+            unknown.append(model_id)
+        return price
+
+    @staticmethod
+    def _unit_price(model_id: str, field: str) -> Optional[float]:
+        if not model_id:
+            return None
+        metadata = MODEL_CONFIG.get("models", {}).get(model_id)
+        if not isinstance(metadata, dict) or metadata.get(field) is None:
+            return None
+        try:
+            return float(metadata[field])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _image_cost(asset_count: int, unit_price: Optional[float]) -> Optional[dict[str, float]]:
+        if asset_count <= 0:
+            return {"min": 0.0, "max": 0.0}
+        if unit_price is None:
+            return None
+        return {
+            "min": CostEstimate._money(
+                asset_count * CostEstimate.MIN_IMAGE_CALLS_PER_ASSET * unit_price
+            ),
+            "max": CostEstimate._money(
+                asset_count * CostEstimate.MAX_IMAGE_CALLS_PER_ASSET * unit_price
+            ),
+        }
+
+    @staticmethod
+    def _video_cost(duration_seconds: float, unit_price: Optional[float]) -> Optional[float]:
+        if duration_seconds <= 0:
+            return 0.0
+        if unit_price is None:
+            return None
+        return CostEstimate._money(duration_seconds * unit_price)
+
+    @staticmethod
+    def _sum_costs(
+        image: Optional[dict[str, float]],
+        video: Optional[float],
+    ) -> Optional[dict[str, float]]:
+        if image is None or video is None:
+            return None
+        return {
+            "min": CostEstimate._money(image["min"] + video),
+            "max": CostEstimate._money(image["max"] + video),
+        }
+
+    @staticmethod
+    def _count(value: Any) -> int:
+        try:
+            return max(int(value), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _seconds(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _money(value: float) -> float:
+        return round(float(value), 6)
+
+
 def get_max_concurrency(model: str, enable_concurrency: bool = False) -> int:
     if not enable_concurrency:
         return 1

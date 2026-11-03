@@ -12,6 +12,7 @@ from api.services.project_helpers import (
     stream_workflow_task,
 )
 from config import settings
+from models.config_model import CostEstimate
 
 router = APIRouter(tags=["Workflow"])
 
@@ -156,6 +157,17 @@ async def get_project_status_from_disk(session_id: str):
     if not snapshot:
         raise HTTPException(404, "Session not found")
     return snapshot
+
+
+@router.get("/api/project/{session_id}/cost_estimate")
+async def get_cost_estimate(session_id: str):
+    """Return a pre-call cost range. Reads session state only; calls no paid API."""
+    snapshot = workflow_engine.get_status_snapshot(session_id)
+    if not snapshot:
+        raise HTTPException(404, "Session not found")
+    meta = snapshot.get("meta") if isinstance(snapshot.get("meta"), dict) else {}
+    artifacts = snapshot.get("artifacts") if isinstance(snapshot.get("artifacts"), dict) else {}
+    return CostEstimate.from_session(meta, artifacts, _active_video_model(meta))
 
 
 @router.get("/api/project/{session_id}/artifact/{stage}")
