@@ -88,12 +88,14 @@ The library uses a different kind list (`storage/schema.py`): `script`, `charact
 
 `run_node` loads the graph, refuses a blocked node (`status: "blocked"`, no ledger write), then dispatches by modality:
 
+`_modality` uses an explicit `modality` on the request or the node metadata when it is `video`, `image`, `vlm`, or `tts`. Otherwise it classifies by kind.
+
 | Kind / modality | Gate |
 |-----------------|------|
-| `script`, `storyboard`, `previz` | No per-call confirm and no ledger row. The node runner result is stored and the node is marked `done`. |
-| video kinds `shot_segment`, `draft_video`, `final_video`, `segment`, `video`, or modality `video` | Quote, then wait. Ledger is written only in `confirm`, and only after `ProjectBudget.authorize`. |
-| image kinds `character`, `scene`, `setting`, `keyframe`, `image`, or modality `image`, `vlm`, `tts` | No per-call confirm. `ProjectBudget.authorize` reserves immediately. Over budget pauses. |
-| anything else | `status: "unsupported"`, message `node has no billable modality`. |
+| `shot_segment`, `draft_video`, `final_video`, `segment`, `video`, or modality `video` | Video confirm. Quote, then wait at `awaiting_user` / `gate: "confirm"`. The ledger row is written only in `confirm`, after `ProjectBudget.authorize`. The settled actual is `quote.max`. |
+| `character`, `scene`, `setting`, `keyframe`, `image`, or modality `image`; kind or modality `vlm` or `tts` | No per-call confirm. `run_node` calls `ProjectBudget.authorize` immediately. When that is allowed, `_finish` writes `actual` = `quote.max` and marks the node `done` with `spent: true`. That charge is written even when the runner returns `provider_called: false` (the HTTP body keeps `provider_called: false`). Over budget pauses at `gate: "budget"` and does not run the node. |
+| `script`, `storyboard`, `previz` | No quote and no ledger row. The runner result is stored and the node is marked `done`. |
+| any other kind with no explicit modality | `status: "unsupported"`, message `node has no billable modality`. Library kinds `prop` and `final_cut` land here. `character`, `scene`, `setting`, `keyframe`, and `image` do not. An explicit modality on one of these kinds follows the row above. |
 
 An empty video `model_id` becomes `doubao-seedance-2-5-260628` (`DEFAULT_REFERENCE_VIDEO_MODEL`). That is the reference-to-video default. It is not `config.yaml` `models.video` (that key still defaults to `wan2.7-i2v`).
 
@@ -124,9 +126,9 @@ Order for a video node:
 3. Authorize either reserves (`ledger.status = quoted`, `allowed` true) or pauses (`awaiting_user`) when `used + committed + quote.max` would pass `budget_cap`. A null cap never pauses.
 4. A reserved quote is spent with `ProjectBudget.record_actual` only after submit returns a URL or path. Spent and `done` commit in one transaction. The actual recorded by the executor is the reserved quote amount (`quote.max`), not a second vendor invoice.
 
-Image, VLM, and TTS skip step 1's wait: `run_node` calls `authorize` immediately. Over budget returns `gate: "budget"` and does not run the node. Raising the cap (`raise_budget`) continues the same quote. Declining (`decline_budget`, or `decline` on the node) sets the ledger row to `skipped` and skips the node.
+Image kinds (`character`, `scene`, `setting`, `keyframe`, `image`), VLM, and TTS skip step 1's wait: `run_node` calls `authorize` immediately and, when allowed, spends `quote.max` even if `provider_called` is false. Over budget returns `gate: "budget"` and does not run the node. Raising the cap (`raise_budget`) continues the same quote. Declining (`decline_budget`, or `decline` on the node) sets the ledger row to `skipped` and skips the node.
 
-Pause text is built by `pause_message`: `已用 {used} / 本次报价 {min}~{max} / 当前上限 {cap}。是否上调预算上限？`
+Pause text is built by `pause_message`. Each of the three numbers gets a ` {currency}` suffix when the quote has a currency (a leading space, then the code). Equal min and max are printed as one number, not a range: `已用 {used} {currency} / 本次报价 {min} {currency} / 当前上限 {cap} {currency}。是否上调预算上限？` A range is `{min}~{max}` in the middle slot, still with the suffix. No currency means no suffix.
 
 Ledger statuses: `quoted`, `awaiting_user`, `skipped`, `spent`, `unavailable`.
 
@@ -208,7 +210,9 @@ Constants: `VIDEO_SUBMIT_CLAIM_TTL_SECONDS = 30 * 60`, `video_seedance.SUBMIT_DE
 
 Before `adapter.submit`, the same claim writes node metadata `submit_dispatched: true` and commits it. `on_task` then stores `vendor_task_id` (and keeps the marker). A result URL is written to `result_obtained` and committed before the spent-and-done transaction.
 
-`submit_dispatched` and `vendor_task_id` are cleared only when this attempt never issued HTTP: `FileNotFoundError`, `UnsupportedParam`, `SubmitNotSent`, or an error string containing `ARK_API_KEY not set`, `reference image file is missing`, or `model is not registered`. Poll and download errors, vendor `failed` or `expired`, every HTTP 4xx, timeouts, and any other exception keep both. A 4xx body that contains an id is stored as `vendor_task_id` before the error is raised. The reserved quote is skipped, the node returns to `awaiting_user`, and a plain `confirm` does not POST again.
+A missing provider key with no injected adapter returns from `_video_submitter` before the marker write. There is no POST and `submit_dispatched` is never set. `_finish` still spends the reserved quote at `quote.max`, marks the node `done`, and leaves `provider_called` false.
+
+The marker is cleared only after it was written and `submit` then raises something `_request_was_not_sent` accepts: `FileNotFoundError`, `UnsupportedParam`, `SubmitNotSent`, or an error string containing `reference image file is missing`, `model is not registered`, or `ARK_API_KEY not set`. That last string is an adapter that already entered `submit`. The usual missing-key path does not. On this path the quote is skipped, the node returns to `awaiting_user`, and a plain `confirm` does not POST again. Poll and download errors, vendor `failed` or `expired`, every HTTP 4xx, timeouts, and any other exception keep both `submit_dispatched` and `vendor_task_id`. A 4xx body that contains an id is stored as `vendor_task_id` before the error is raised.
 
 `retry_video_submit(project_id, node_id, force_new=False)` is `confirm(..., retry=True, force_new=...)`. It has no HTTP route on this commit (a later frontend branch may add one). The marker stays set. A stored `vendor_task_id` is polled again and the original quote is spent, including when the claim is stale. A stored `result_obtained` URL is settled with no new POST. `force_new=True` is valid only on this retry: it releases the old quote, authorizes a new one, and drops `vendor_task_id` only after that authorization succeeds, then POSTs. If the new quote does not fit the budget, the id and marker stay (`force_new_pending`) and `raise_budget` can continue that attempt. `force_new` on a plain confirm raises `force_new is only valid on retry_video_submit`.
 

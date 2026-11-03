@@ -1,3 +1,5 @@
+> **已废弃，仅历史。** 请求体和响应以 `video-claw/backend/docs/api.md` 的 `POST /api/sandbox/t2i` 为准。下面的模型名、默认值和 `image_url` 字段不是当前路由。
+
 # 文生图 (T2I)
 
 使用文字生成图片。

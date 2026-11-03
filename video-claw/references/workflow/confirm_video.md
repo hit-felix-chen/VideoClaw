@@ -30,7 +30,9 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 提交前先把 `submit_dispatched` 写成 true 并落库。拿到任务 id 后写入 `vendor_task_id`。拿到结果 URL 后先落库 `result_obtained`，再在同一事务里记账并把节点标完成。
 
-只在这次尝试没有发出 HTTP 时才清掉 `submit_dispatched` 和 `vendor_task_id`：缺密钥、缺参考图文件、模型未注册、`FileNotFoundError`、`UnsupportedParam`。轮询失败、下载失败、供应商 failed 或 expired、所有 HTTP 4xx、超时，都保留标记。4xx 体里若有 `id`，会记成 `vendor_task_id`。报价改为 `skipped`，节点回到 `awaiting_user`。之后普通 confirm 不会再 POST。
+上面「没有密钥」的路径不写标记，也不把标记清掉：不 POST，直接花掉已保留的报价。
+
+标记只有在已经写成 true、并且随后的 `submit` 被 `_request_was_not_sent` 判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`。这时报价改为 `skipped`，节点回到 `awaiting_user`。轮询失败、下载失败、供应商 failed 或 expired、所有 HTTP 4xx、超时，都保留标记。4xx 体里若有 `id`，会记成 `vendor_task_id`。之后普通 confirm 不会再 POST。
 
 ## 手动重试（无 HTTP）
 

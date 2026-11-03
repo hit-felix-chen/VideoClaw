@@ -40,6 +40,8 @@
 </div>
 
 
+> **The six-stage product description below is obsolete and kept as history.** The backend on this tree is an asset dependency graph (`GraphExecutor.run_node`), not a script → character → storyboard → reference → video → edit pipeline, and there is no `/api/project`. Current routes are in `video-claw/video-claw/backend/docs/api.md`.
+
 # 💥 News
 
 - `2026/3/27`: 🎬 VideoClaw was officially released, supporting full workflow automation from idea to video generation, with user intervention and adjustment available at any time.

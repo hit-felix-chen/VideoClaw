@@ -123,7 +123,7 @@
 | 方法 | 路径 | 请求 / 查询 | 响应 |
 |------|------|-------------|------|
 | POST | `/api/library/assets` | `name`、`kind` 必填。`scope` 默认 `project`。`project` 范围必须有 `project_id`；`global` 不能带 `project_id`。可选 `description`、`tags`、`episode_id` | 资产记录 |
-| GET | `/api/library/assets` | `project_id`、`scope`、`kind`、`include_global`（默认 true）。重复查询参数 `tag` 时改为按标签搜索 | `{"assets": [...]}` |
+| GET | `/api/library/assets` | `project_id`、`scope`、`kind`。重复查询参数 `tag` 时改为 `AssetStore.search`，这时 `include_global`（默认 true）才生效。没有 `tag` 时走 `AssetStore.list`，`include_global` 被忽略 | `{"assets": [...]}` |
 | GET | `/api/library/search` | `tag` 必填，可重复。可选 `project_id`、`include_global`（默认 true）、`kind`、`scope` | `{"assets": [...]}` |
 | GET | `/api/library/assets/{asset_id}` | 无 | 资产记录 |
 | PATCH | `/api/library/assets/{asset_id}` | 只更新出现过的字段：`name`、`description`、`tags`、`episode_id` | 资产记录 |
@@ -246,13 +246,15 @@
 
 ### 谁需要逐次确认
 
-只有视频需要逐次确认。`run_node` 对视频只报价并停在 `awaiting_user`（`gate: "confirm"`），账本要等 `confirm`。
+`_modality`（`executor.py`）先看请求或节点 metadata 里的 `modality`。没有的话按 kind 归类。归类和入账如下。
 
-图片、VLM、TTS 不逐次确认：`run_node` 里直接 `ProjectBudget.authorize`。未超预算则立刻跑节点并按报价上限记一笔 `spent`。超预算则停在 `gate: "budget"`，不跑节点。
+| kind 或 modality | `run` 做什么 |
+|------------------|--------------|
+| kind `shot_segment`、`draft_video`、`final_video`、`segment`、`video`，或 `modality=video` | 视频确认门。只报价，节点 `awaiting_user`，`gate` 为 `confirm`，账本还没有行。用户 `confirm` 之后才 `authorize`。结算时 `actual` 等于 `quote.max`。 |
+| kind `character`、`scene`、`setting`、`keyframe`、`image`，或 `modality=image`；kind 或 modality 为 `vlm`、`tts` | 不确认。`run` 里直接 `ProjectBudget.authorize`。未超预算则 `_finish` 把 `actual` 记成 `quote.max`（`this_quote`），节点 `done`，`spent` true。节点执行器返回 `provider_called: false` 时也记这一笔，响应里的 `provider_called` 仍是 false。超预算则 `gate` 为 `budget`，不跑节点。 |
+| kind `script`、`storyboard`、`previz` | 不报价、不入账，跑完即 `done`。 |
 
-`script`、`storyboard`、`previz` 不报价、不入账，跑完即 `done`。
-
-其他种类：`status` 为 `unsupported`，`message` 为 `node has no billable modality`。
+`character`、`scene`、`setting`、`keyframe`、`image` 不是 `unsupported`。不传 `modality` 时，不在上表里的 kind 才是 `unsupported`（`status: "unsupported"`，`message` 为 `node has no billable modality`）。库种类里这是 `prop` 和 `final_cut`。给这种节点显式带上 `modality`（`video` / `image` / `vlm` / `tts`）则改走对应的那一列。
 
 前驱未完成：`status` 为 `blocked`，带 `why_blocked`，不写账本。
 
@@ -260,9 +262,15 @@
 
 体：`NodeRunRequest` 或空。
 
-视频且报价不可用（没有文档价格，或有百万 token 价格但没有可缩放的数量）：`status` 为 `unavailable`，`gate` 为 `none`，不写账本，节点保持 `pending`。Seedance 2.5 的 `duration.default` 是 -1，执行器不会把它当成计费秒数；不传 `completion_tokens` 时就会走这条。调用方传的 `duration` 不改变这个结果。响应里的 `duration` 仍是能力说明：`min` 4，`max` 30，`default` -1，`allow_auto` true，`verified` true。
+视频且报价不可用时：`status` 为 `unavailable`，`gate` 为 `none`，不写账本，节点保持 `pending`。下面几种都是这样：
 
-视频报价可用：节点改为 `awaiting_user`，`gate` 为 `confirm`，`call_confirmed` false，`submitted` false。若 `used + committed + quote.max` 已超过 `budget_cap`，`over_budget` 为 true，`message` 是「已用 … / 本次报价 … / 当前上限 …。是否上调预算上限？」。此时仍没有账本行。`budget_cap` 为 null 时不判超支。
+- 没有文档价格。
+- 有多条文档价格，但选不中唯一的一条。Seedance 2.5 按分辨率和是否含视频输入各有一行。`resolution` 和 `includes_video_input` 缺一个，`PriceBook.quote` 就匹配不到恰好一行，原因是 `no single documented price matches this request`。
+- 选出了一行百万 token 价格，但没有可缩放的数量。`duration.default` 是 -1，不会被当成计费秒数；不传 `completion_tokens` 时 `quantity` 仍是 null。
+
+调用方传的 `duration` 不改变上面的结果。响应里的 `duration` 仍是能力说明：`min` 4，`max` 30，`default` -1，`allow_auto` true，`verified` true。
+
+视频报价可用：节点改为 `awaiting_user`，`gate` 为 `confirm`，`call_confirmed` false，`submitted` false。若 `used + committed + quote.max` 已超过 `budget_cap`，`over_budget` 为 true。`message` 是 `pause_message`：三个数字在报价有币种时各带 ` {currency}` 后缀（`min` 等于 `max` 时中间只有一个数）。此时仍没有账本行。`budget_cap` 为 null 时不判超支。
 
 ### `POST /api/v2/projects/{project_id}/nodes/{node_id}/confirm`
 
@@ -292,7 +300,7 @@
 
 请求体：`{"budget_cap": 0.0}`，必填浮点。
 
-新上限仍盖不住 `used + committed + 本次报价`：保持原上限，调用仍不提交，响应 `allowed` false。
+新上限仍盖不住 `used + committed + 本次报价`：保持原上限，调用仍不提交。HTTP 响应是 `_pack`，没有 `allowed` 字段。此时 `gate` 为 `budget`，`over_budget` 为 true，`status` 为 `awaiting_user`，`submitted` 与 `spent` 为 false。
 
 够用：项目 `budget_cap` 改为新值，该行改为 `quoted` 且 `confirmed` true，然后继续同一次报价（视频会接着提交）。`message` 为「已上调预算上限，可以继续。」
 
@@ -304,7 +312,7 @@
 
 ### `GET /api/v2/projects/{project_id}/status`
 
-无图或图里没有 `nodes` 时，三个列表为空，预算和账本仍返回。
+无图或图里没有 `nodes` 时，`nodes`、`awaiting_user`、`executable`、`stale` 四个数组都是空的。预算和账本仍返回。
 
 ```json
 {
@@ -342,7 +350,7 @@
 
 令牌必须属于该项目、对应该形象、未过期，且当前下游集合与签发时一致，否则 400（`confirm_token is invalid` / `belongs to a different project` / `does not match this look` / `has expired` / `is stale: the impact set changed`）。集合为空：`nothing to regenerate`。
 
-认领后按拓扑跑 `impact_nodes`。每个节点走 `run_node`。视频节点接着在批内 `confirm`（授权并写账本）。图片、VLM、TTS 仍是 `run_node` 里立即占用额度。第一个仍在等用户的节点停下，后面的节点这次不会占用也不会花。某个节点在占用额度之后失败：释放该节点未结算的报价，把失败写在已消费的令牌上。再次 confirm 已消费的令牌时，若令牌上有结果则原样返回，不再花第二次。
+认领后按拓扑跑 `impact_nodes`。每个节点走 `run_node`。视频节点接着在批内 `confirm`（授权并写账本）。图片、VLM、TTS 以及 kind `character`、`scene`、`setting`、`keyframe`、`image` 仍在 `run_node` 里直接按 `quote.max` 入账，`provider_called` 为 false 也记 `spent`。第一个仍在等用户的节点停下，后面的节点这次不会占用也不会花。某个节点在占用额度之后失败：释放该节点未结算的报价，把失败写在已消费的令牌上，然后抛 `_GateError`。这条 HTTP 是 400，`detail` 形如 `impact regenerate failed on node {id}: ...`。再次 confirm 已消费且存了结果的令牌时原样返回该结果，不再花第二次，这次是 200。
 
 响应在报价字段之外有：`confirmed`，`executed`，`will_spend`（false），`spent`，`submitted`，`provider_called`，`nodes`，`spent_node_ids`，`failed`，`failed_node_id`，`error`，`halted`。
 
@@ -360,9 +368,9 @@
 
 `confirm` 在 `adapter.submit` 之前把节点 metadata `submit_dispatched` 写成 true 并提交事务。供应商返回任务 id 时写入 `vendor_task_id`，标记保持 true。拿到结果 URL 后先单独提交 `result_obtained`（同时保持 `submit_dispatched`），再在同一事务里把账本记为 `spent` 并把节点标 `done`。本地文件在 `code/result/video/<project_id>/<node_id>.mp4`，URL 记在 `result_id`。
 
-只有这次尝试没有发出 HTTP 时才清掉 `submit_dispatched` 和 `vendor_task_id`：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `ARK_API_KEY not set`、`reference image file is missing`、`model is not registered`。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留两个字段。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。报价标为 `skipped`，节点回到 `awaiting_user`。此后普通 `confirm` 不会再 POST。
+供应商密钥未配置、也没有注入适配器时，`_video_submitter` 在写标记之前就返回。不 POST，不置 `submit_dispatched`，然后 `_finish` 仍把已保留报价按 `quote.max` 记成 `spent`，节点 `done`，`provider_called` 为 false。准备好的请求（仍是资产 id，不是文件）存在节点上。这不是「清标记」：标记本来就没写上。
 
-没有密钥、也没有注入适配器时：不调供应商，把节点执行器准备好的请求（仍是资产 id，不是文件）存进节点并花掉已保留的报价。
+标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`（最后这句是适配器已经进入 `submit` 又发现没有密钥；常见的缺密钥路径不进入 `submit`）。这时报价改为 `skipped`，节点回到 `awaiting_user`，不是再花一笔。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。
 
 镜头时长：`shot_duration` 取节点 metadata。模型 `duration.verified` 不为 true 则不发送时长。整数且落在该模型 min..max 内则用该秒数，否则若 `allow_auto` 则发送 -1。Seedance 2.5 是 4 到 30 秒，区间外为 -1。已核实的其他模型区间：
 

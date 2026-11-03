@@ -71,8 +71,8 @@ video-claw/                         ← skill 根目录
 5. 资产、形象、图片走资产库。片段引用按 segment_refs.md。
 6. 图必须已经在该项目的 `graph_json` 里。本提交没有写入图的 HTTP。没有图时 `run` 会 400：`project has no dependency graph`。不要改调 `/api/project`。
 7. 对可执行节点 `POST /api/v2/projects/{project_id}/nodes/{node_id}/run`。
-8. 只有视频停下来等用户确认报价，再 `confirm`。图片、VLM、TTS 在 `run` 里直接占用额度。剧本、分镜、previz 不入账。
-9. `over_budget` 或 `gate` 为 `budget` 时，把「已用 / 本次报价 / 当前上限」原文给用户。上调走 raise，放弃走 decline。不要自己改上限。
+8. 只有视频停下来等用户确认报价，再 `confirm`。kind `character`、`scene`、`setting`、`keyframe`、`image` 以及 VLM、TTS 在 `run` 里直接按 `quote.max` 入账（`provider_called` 为 false 也记 `spent`）。`script`、`storyboard`、`previz` 不入账。不传 `modality` 时，`prop` 和 `final_cut` 是 `unsupported`。
+9. `over_budget` 或 `gate` 为 `budget` 时，把暂停文案原文给用户（三个数字在有币种时各带 ` {currency}` 后缀）。上调走 raise，放弃走 decline。不要自己改上限。raise 不够时响应里没有 `allowed`，而是 `gate` 为 `budget`、`over_budget` 为 true。
 10. 改形象后若要重跑下游，先 impact 拿令牌，用户确认后再 confirm。令牌 30 分钟、一次性、绑死当时的节点集合。
 
 ---
@@ -82,7 +82,7 @@ video-claw/                         ← skill 根目录
 | 调用 | 要不要等用户 |
 |------|----------------|
 | 视频 `run` | 要。返回报价，`gate` 为 `confirm`，账本还没有行。用户同意后再 `confirm`，那时才 `authorize` 并写入账本。 |
-| 图片、VLM、TTS | 不要逐次确认。未超预算就在 `run` 里占用并结算。超预算才停，等的是预算决定，不是另一次生成确认。 |
+| kind `character`、`scene`、`setting`、`keyframe`、`image`，以及 `vlm`、`tts` | 不要逐次确认。未超预算就在 `run` 里 `authorize`，并按 `quote.max` 记 `spent`（`provider_called` 为 false 也记账），节点 `done`。超预算才停，等的是预算决定。`prop` 和 `final_cut` 在不传 `modality` 时是 `unsupported`，不是这条。 |
 | `script`、`storyboard`、`previz` | 不要确认，也不写账本。 |
 | 超预算 | 要。把暂停文案给用户。raise 继续同一笔报价；decline 跳过，不提交。 |
 
@@ -96,7 +96,9 @@ Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 aut
 
 ## 视频提交失败时
 
-普通 `confirm` 在 `submit_dispatched` 已置位时不会再次 POST。标记和 `vendor_task_id` 只在这次尝试根本没发出 HTTP 时清除（缺密钥、缺文件、未知模型、`FileNotFoundError`、`UnsupportedParam`）。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
+供应商密钥没配、也没有注入适配器时：不 POST，不写 `submit_dispatched`，已保留的报价仍按 `quote.max` 记 `spent`，节点 `done`。这不是清标记。
+
+普通 `confirm` 在 `submit_dispatched` 已经写上时不会再次 POST。标记只有在 `submit` 已经开始、随后又被判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`。这时报价改为 `skipped`。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
 
 手动重试是 `GraphExecutor.retry_video_submit`。本提交没有这条 HTTP。`r9/frontend-v2` 可能会加路由；加之前不要猜路径。`force_new=True` 只属于这次重试：先释放旧报价，新报价授权成功后才丢掉任务 id，然后才 POST。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。细节见 confirm_video.md。
 
