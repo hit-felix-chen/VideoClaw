@@ -152,12 +152,34 @@ class TestSandboxRoutes:
             "/api/sandbox/video",
             json={"model": "wan2.7-i2v", "prompt": "走路", "image": "result/a.png", "duration": 5},
         )
-        assert video.status_code == 200
-        assert video.json()["success"] is True
-        assert video.json()["video_path"]
+        assert video.status_code == 409
+        assert video.json()["success"] is False
+        assert video.json()["error"] == "沙盒视频需在项目内生成"
         assert client.get("/api/sandbox/tasks").json()["tasks"] == []
 
         deleted = client.delete(f"/api/sandbox/history/{record_id}")
         assert deleted.json()["success"] is True
         assert client.get(f"/api/sandbox/history/{record_id}").json()["success"] is False
+
+    def test_sandbox_video_without_project_does_not_call_the_vendor(self, client, monkeypatch):
+        calls = []
+
+        class VideoClient:
+            def generate_video(self, *args, **kwargs):
+                calls.append((args, kwargs))
+                return "should-not-run"
+
+        monkeypatch.setattr("models.video_client.VideoClient", VideoClient)
+        body = {"model": "wan2.7-i2v", "prompt": "走路", "image": "result/a.png", "duration": 5}
+        refused = client.post("/api/sandbox/video", json=body)
+        assert refused.status_code == 409
+        assert refused.json() == {"success": False, "error": "沙盒视频需在项目内生成"}
+        assert calls == []
+
+        # The schema has no project_id. An extra field is not a project path.
+        also = client.post("/api/sandbox/video", json={**body, "project_id": "p1"})
+        assert also.status_code == 409
+        assert also.json()["error"] == "沙盒视频需在项目内生成"
+        assert calls == []
+        assert client.get("/api/sandbox/tasks").json()["tasks"] == []
 
