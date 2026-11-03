@@ -1,281 +1,127 @@
 ﻿---
 name: video-claw
-description: AI 视频生成全流程：通过 6 个阶段（剧本→角色/场景设计→分镜→参考图→视频生成→后期剪辑）将用户想法转化为完整视频。支持临时工作台（单独调用 LLM、VLM、文生图、图生图、视频生成）。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图。
+description: 本地资产图驱动的 AI 视频生成。项目、资产、形象和片段引用在资产库；节点由 GraphExecutor.run_node 执行。只有视频逐次确认，然后才 ProjectBudget.authorize 并写入账本。触发词：视频生成、AI视频、AIGC、创作视频、制作视频、AI画图。
 license: MIT License
 metadata:
   author: Lychee
-  version: "1.0"
+  version: "2.0"
 ---
 
 # Video-Claw Agent Skill
 
-> **本地运行**：这是一个**本地部署**的视频生成项目，**前后端都运行在本机**：
-> - 后端：`http://localhost:8000`
+> **本地运行**：前后端都在本机。
+> - 后端：`http://127.0.0.1:8000`（`config.yaml` 的 `server.host` / `server.port`）
 > - 前端：`http://localhost:3000`
-> - 所有 API 调用都请求本地服务器，不要请求其他地址！
-> - 确保在调用任何 API 之前，后端和前端服务都已经启动并运行正常！
+> - 只请求本机。调用前先确认后端已启动。
 
-> **核心理念**：Agent 应该像"持续陪伴的智能视频制作助理"，每完成一个用户可感知的重要任务，都应立即给用户一条简报，并等待用户确认。
+> **架构**：没有编排器，没有六阶段流水线，没有 `/api/project`。一个项目是 SQLite 里的一行。资产组成依赖图。集是分组，不是节点。
 
-> **核心原则**：每个阶段的产物都必须展示给用户，必须停下来等待用户确认后才能继续下一阶段。
-
-> **防止遗忘**：在整个流程中，Agent 可能会忘记之前的用户输入或之前阶段的产物内容。**每当进入一个新的阶段时，Agent 都必须重新加载这篇SKILL文档，确保不会忘记任何细节**。
+> **接口以代码为准**：路径和请求体见 [api.md](video-claw/backend/docs/api.md)。下面每一步都指向 `references/workflow/` 里的对应文档，不要凭记忆调用已经删除的 session 接口。
 
 ---
 
 ## 项目结构
 
 ```
-video-claw/                    ← OpenClaw 调用的 skill 根目录
-├── video-claw/                    ← 前后端项目代码
-│   ├── backend/                  ← FastAPI 后端（端口 8000）
-│   │   ├── api/                  ← API 路由、Schema 和服务
-│   │   ├── models/               ← 模型注册、能力标签和模型调用客户端
-│   │   └── code/                 ← 数据与生成产物
-│   │       └── result/
-│   │           ├── image/        ← 主流程图片产物
-│   │           ├── video/        ← 主流程视频产物
-│   │           └── script/       ← 主流程剧本产物
-│   └── frontend/                 ← Next.js 前端（端口 3000）
-├── references/                   ← OpenClaw 调用时的参考文档
-│   ├── init_project/             ← 项目初始化
-│   ├── run_project/              ← 服务启动
-│   ├── workflow/                 ← 六阶段工作流 API
-│   ├── sandbox/                  ← 临时工作台 API
-│   └── send_message/             ← 消息发送
-└── SKILL.md                      ← skill 正文
+video-claw/                         ← skill 根目录
+├── video-claw/
+│   ├── backend/                    ← FastAPI，默认 127.0.0.1:8000
+│   │   ├── api/routers/            ← 实际路由
+│   │   ├── core/executor.py        ← GraphExecutor
+│   │   ├── graph/                  ← 资产依赖图
+│   │   ├── models/middle/          ← 注册表、报价、预算
+│   │   ├── storage/                ← SQLite：项目、资产、账本、确认令牌
+│   │   └── code/data/videoclaw.db  ← 运行时库（WAL），不入库
+│   └── frontend/                   ← Next.js
+├── references/
+│   ├── init_project/               ← 安装依赖
+│   ├── run_project/                ← 启动进程
+│   ├── workflow/                   ← v2 调用步骤
+│   ├── sandbox/                    ← 临时工作台说明（载荷以 api.md 为准）
+│   └── send_message/               ← 飞书 / 微信发文件
+└── SKILL.md
 ```
-
-> **产物存放目录**：`video-claw/backend/code/result/`
-> - `script/` - 剧本产物
-> - `image/` - 图片产物（角色、场景、参考图）
-> - `video/` - 视频产物
 
 ---
 
-## 阶段与停点（含停点0，共7个停点）
+## 先看什么
 
-| 停点 | 阶段 | phase 值 | 描述 | 操作 |
-|------|------|----------|------|------|
-| 0 | 剧情及视觉确认 | - | 确认项目创意、集数、文档以及风格比例 | 展示初版规划 → 用户确认 |
-| 1 | AI模型参数配置 | - | 确认项目将调用的各种底层AI模型类型及其他控制参数 | 展示配置 → 用户确认 |
-| 2 | 剧本生成 | script_generation | 确认全集剧本 | 展示每集剧情概要，发送阶段url → 用户确认 |
-| 3 | 角色/场景设计 | - | 确认角色/场景图片 | 展示所有人物/场景图片，发送阶段url → 用户确认 |
-| 4 | 分镜设计 | - | 确认分镜列表 | 发送分镜个数、每集时长、总时长信息 → 用户确认 |
-| 5 | 参考图生成 | - | 确认参考图 | 发送阶段url → 用户确认 |
-| 6 | 视频生成 | - | 确认视频片段 | 发送阶段url → 用户确认 |
-| - | 后期剪辑 | post_production | 拼接视频并生成最终成片 | 无需确认，完成后发送阶段url和分集视频 |
-
-> **注意**：原有的部分复杂剧本流程（扩写、模式选择等）由于系统优化已简化，目前直接输出最终的剧本列表，以分集（`episode_number`）为单位。
-
----
-
-## 工作流程
-
-### 1. 本地部署(仅初始化时执行)
-
-当用户要求"初始化项目"、"配置项目"、"部署项目"时，需要先进行项目初始化：参考 [init_all.md](references/init_project/init_all.md) 执行完整初始化流程。
-
-> **注意**：仅在用户首次下载项目或需要重新配置环境时使用。项目已初始化过则跳过此步骤，直接检查服务运行状态。
-
-### 2. 检查本地服务
-
-参考 [start_backend.md](references/run_project/start_backend.md) 和 [start_frontend.md](references/run_project/start_frontend.md) 检查服务是否运行。
-
-> **⚠️ 强制要求**：如果服务未运行，必须先启动服务再继续！
-
-### 2. 路由判断
-
-| 用户说 | 处理 |
-|--------|------|
-| "生成图片" | 临时工作台 (sandbox) |
-| "生成视频" | 必须先询问：长视频(六阶段工作流)，还是临时工作台视频？ |
-| "分析图片" | 临时工作台 (sandbox) |
-| "问 LLM 问题" | 临时工作台 (sandbox) |
-| "照片转动漫" | 临时工作台 (sandbox) |
-
-### 3. 执行流程
-
-```
-1. 检查后端运行状态 → 未运行则参考 start_backend.md 启动 → 等待3秒 → 再次检查
-2. 检查前端运行状态 → 未运行则参考 start_frontend.md 启动 → 等待5秒 → 再次检查
-3. 检查 API Key 配置 → 读取 `video-claw/backend/config.yaml`，确认所需 API Key 已配置
-4. 参考 create_project.md，询问用户剧情与集数相关配置（停点0），确认无误后接着确认生成参数选项（停点1）。全部确认完毕后 → 创建项目
-5. 参考 create_script.md 执行剧本生成 → 停点2
-6. 参考 create_character.md 执行角色设计 → 停点3
-7. 参考 create_storyboard.md 执行分镜设计 → 停点4
-8. 参考 create_reference.md 执行参考图生成 → 停点5
-9. 参考 create_video.md 执行视频生成 → 停点6
-10. 参考 create_post.md 执行后期剪辑
-11. 完成 → 发送最终视频给用户（若用户在看完成片后希望继续推进故事，参考 smart_continue.md 开始智能续写，然后继续执行新生成片段的后续流程）
-```
-
-> **注意**：一定要参考 `references/` 目录下的具体文档执行每一步操作，不要凭记忆或想当然去调用 API！
-
-### 4. 检查 API Key 配置
-
-在创建项目前，必须检查用户选择的模型对应的 API Key 是否已配置：
-
-```bash
-# 读取 config.yaml 检查配置
-sed -n '1,120p' video-claw/backend/config.yaml
-
-# 必需的配置（根据选择的模型）
-# LLM: models.llm.api_key 或 api_providers.deepseek/openai/gemini/dashscope.api_key
-# 图片: api_providers.ark.api_key 或 api_providers.dashscope.api_key
-# 视频: api_providers.dashscope.api_key / api_providers.ark.api_key / api_providers.kling.access_key + secret_key
-```
-
-如果 API Key 未配置，需要提醒用户：
-1. 告知缺少哪个平台的 API Key
-2. 提供获取方式
-3. 配置位置（`video-claw/backend/config.yaml` 文件，或前端侧边栏底部「设置」页面）
-4. 等待用户配置完成后才能继续
-
-| 平台 | config.yaml 字段 | 获取链接 |
-|------|--------------|----------|
-| DeepSeek | `api_providers.deepseek.api_key` | https://platform.deepseek.com/api_keys |
-| 阿里云 DashScope | `api_providers.dashscope.api_key` 或 `models.llm.api_key` | https://bailian.console.aliyun.com/cn-beijing/?tab=home#/home |
-| 字节火山方舟 | `api_providers.ark.api_key` | https://www.volcengine.com/product/ark |
-| 快手可灵 Kling | `api_providers.kling.access_key` / `api_providers.kling.secret_key` | https://klingai.com/cn/dev |
+| 用户要做的事 | 文档 |
+|--------------|------|
+| 第一次安装 | [init_all.md](references/init_project/init_all.md) |
+| 后端或前端没起来 | [start_backend.md](references/run_project/start_backend.md)、[start_frontend.md](references/run_project/start_frontend.md) |
+| 建项目、设预算上限 | [create_project.md](references/workflow/create_project.md) |
+| 图、节点状态 | [graph.md](references/workflow/graph.md) |
+| 跑一个节点 | [run_node.md](references/workflow/run_node.md) |
+| 确认视频、提交标记、手动重试 | [confirm_video.md](references/workflow/confirm_video.md) |
+| 超预算暂停、上调或放弃 | [budget.md](references/workflow/budget.md) |
+| 形象变更的影响令牌 | [impact.md](references/workflow/impact.md) |
+| 片段绑定和 `@资产名` | [segment_refs.md](references/workflow/segment_refs.md) |
+| 上传文档或媒体 | [upload_file.md](references/workflow/upload_file.md) |
+| 单次问答、画图、短视频 | [api.md 临时工作台](video-claw/backend/docs/api.md) |
 
 ---
 
-## 🚨 停点处理（强制规则）
+## 执行顺序
 
-**当查询状态为 `completed` 或 `waiting` 时，必须按以下步骤执行：**
-
-### 步骤1：获取产物
-```bash
-curl "http://localhost:8000/api/project/{session_id}/artifact/{stage}"
-```
-
-### 步骤2：展示给用户
-将 artifact 中的内容（选项列表、建议、产物摘要）**完整展示**给用户
-
-### 步骤3：询问决策
-明确告诉用户：
-- 选项有哪些
-- 每个选项的含义
-- 需要用户选择什么
-
-### 步骤4：等待用户回复
-**禁止**在用户回复前自行调用 `intervene` 或 `continue`！
-
-### 步骤5：用户确认后执行
-根据用户的选择，调用相应的 API
+1. 确认后端：`curl -s http://127.0.0.1:8000/api/health`。未运行则按 start_backend.md 启动 `python api_server.py`，等几秒再查。
+2. 需要页面时再确认前端。
+3. 查密钥。读 `video-claw/backend/config.yaml` 的 `api_providers.*.api_key`。DeepSeek 用 `api_providers.deepseek.api_key`，通义用 `api_providers.dashscope.api_key`，方舟 / Seedance 用 `api_providers.ark.api_key`，可灵用 `api_providers.kling.api_key`（不是 access_key + secret_key）。缺密钥就停下来告诉用户缺哪一家、配置文件位置，等用户写上再继续。
+4. 按 create_project.md 创建项目。`budget_cap` 可空，空表示不封顶。
+5. 资产、形象、图片走资产库。片段引用按 segment_refs.md。
+6. 图必须已经在该项目的 `graph_json` 里。本提交没有写入图的 HTTP。没有图时 `run` 会 400：`project has no dependency graph`。不要改调 `/api/project`。
+7. 对可执行节点 `POST /api/v2/projects/{project_id}/nodes/{node_id}/run`。
+8. 只有视频停下来等用户确认报价，再 `confirm`。图片、VLM、TTS 在 `run` 里直接占用额度。剧本、分镜、previz 不入账。
+9. `over_budget` 或 `gate` 为 `budget` 时，把「已用 / 本次报价 / 当前上限」原文给用户。上调走 raise，放弃走 decline。不要自己改上限。
+10. 改形象后若要重跑下游，先 impact 拿令牌，用户确认后再 confirm。令牌 30 分钟、一次性、绑死当时的节点集合。
 
 ---
 
-### ❌ 错误示例（我刚才犯的错）
-```
-收到确认剧情停点 → 直接调用 intervene → 跳过用户确认
-```
+## 确认规则
 
-### ✅ 正确示例
-```
-1. 阶段中间遇到不确定内容
-收到 waiting 停点
-→ 获取 artifact 查看内容
-→ 展示给用户选项
-→ 询问："是否同意修改？"
-→ 用户回复"同意" → 调用 intervene
+| 调用 | 要不要等用户 |
+|------|----------------|
+| 视频 `run` | 要。返回报价，`gate` 为 `confirm`，账本还没有行。用户同意后再 `confirm`，那时才 `authorize` 并写入账本。 |
+| 图片、VLM、TTS | 不要逐次确认。未超预算就在 `run` 里占用并结算。超预算才停，等的是预算决定，不是另一次生成确认。 |
+| `script`、`storyboard`、`previz` | 不要确认，也不写账本。 |
+| 超预算 | 要。把暂停文案给用户。raise 继续同一笔报价；decline 跳过，不提交。 |
 
-2. 阶段完成停点触发
-收到 completed 停点
-→ 获取 artifact 查看产物内容
-→ 展示给用户："第一阶段已完成，生成了剧本内容（x集）..."
-→ 询问："是否继续下一阶段？"
-→ 用户回复"继续" → 调用 continue
-```
+视频节点没给 `model_id` 时，默认是 Seedance 2.5：`doubao-seedance-2-5-260628`，参考生视频。这不是 `models.video`（那一项默认仍是 `wan2.7-i2v`）。
 
-**每个停点必须**：
-1. 展示产物或选项给用户
-2. 询问确认
-3. 用户确认后才能继续
+Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 auto）。请求体里的 `duration` 被忽略。时长来自节点 metadata 的 `shot_duration`。默认时长是 -1，不会被当成计费秒数；不另给 `completion_tokens` 时，百万 token 的文档价格缩放不了，`run` 返回 `unavailable`，不写账本，也不要编一个价。
+
+没有文档 API 价格（未核实、无币种、或没有 http(s) 来源）的模型同样不出数字。
 
 ---
 
-## 状态判断
+## 视频提交失败时
 
-| status | 含义 | 操作 |
-|--------|------|------|
-| pending | 新建会话 | 启动项目 |
-| running | 执行中 | 轮询等待 |
-| waiting | 等待用户介入 | 调用 `intervene` |
-| completed | 阶段完成 | 调用 `continue` |
-| completed | 全部完成 | 结束 |
+普通 `confirm` 在 `submit_dispatched` 已置位时不会再次 POST。标记和 `vendor_task_id` 只在这次尝试根本没发出 HTTP 时清除（缺密钥、缺文件、未知模型、`FileNotFoundError`、`UnsupportedParam`）。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
 
-> **注意**：只有 status 变化时才需要干预，不要反复调用 artifact API 去"确认"！
+手动重试是 `GraphExecutor.retry_video_submit`。本提交没有这条 HTTP。`r9/frontend-v2` 可能会加路由；加之前不要猜路径。`force_new=True` 只属于这次重试：先释放旧报价，新报价授权成功后才丢掉任务 id，然后才 POST。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。细节见 confirm_video.md。
 
 ---
 
-## 消息发送渠道
+## 状态
 
-根据向用户发送消息的渠道（飞书/微信），读取 `references/send_message/` 下的对应参考文档，获取注意事项和发送方法：
-- [feishu.md](references/send_message/feishu.md) - 飞书发送消息
-- [wechat.md](references/send_message/wechat.md) - 微信发送消息
+图上的状态是 `pending`、`running`、`awaiting_user`、`done`、`stale`、`failed`、`skipped`。`ready` 不是图状态。`GET /api/v2/projects/{project_id}/status` 的 `executable` 才是「现在可以跑」的节点。
 
----
+`blocked` 是 `run` 的响应，不是存储状态：前驱没完成，不写账本。
 
-## 任务简报格式
-
-每个阶段完成后，发送简报必须包含：
-1. 刚完成什么
-2. 下一步做什么
-3. 需要用户决策的内容
-4. **Web 界面链接**：`http://[本地IP]:3000/?session={session_id}&stage={stage}`（注意，这里使用本地 IPv4 地址，不要用 localhost！）
-5. 产物图片/视频（直接发送文件，禁止只发路径）
-
-### Web 界面链接格式
-
-```python
-# 获取本地 IPv4 地址
-import socket
-local_ip = socket.gethostbyname(socket.gethostname())
-
-# 构造前端 URL
-frontend_url = f"http://{local_ip}:3000/?session={session_id}&stage={stage}"
-
-# 发送给用户
-send_to_user(f"📊 查看详情：{frontend_url}")
-```
-
-> **重要**：必须使用本地 IPv4 地址（如 `192.168.1.x`），不要使用 `localhost` 或 `127.0.0.1`，否则用户无法从其他设备访问！
+账本状态：`quoted`、`awaiting_user`、`skipped`、`spent`、`unavailable`。
 
 ---
 
-## 详细参考
+## 临时工作台
 
-根据用户的需求和当前阶段，参考 `references/` 目录下的具体文档执行相应操作：
+用户要单独问答、看图、文生图、图生图或一条短视频时，用 `/api/sandbox/*`。这些调用不报价、不确认、不进项目账本。视频时长默认 5 秒，不使用图执行器那条 4..30 秒的规则。请求体以 api.md 为准。
 
-### references 目录
+---
 
-| 文件 | 用途 | 查看时机 |
-|------|------|----------|
-| **init_project/** | 项目初始化 | 用户首次下载或要求"初始化项目"时 |
-| [init_all.md](references/init_project/init_all.md) | 完整初始化流程 | 用户要求初始化部署时 |
-| [init_backend.md](references/init_project/init_backend.md) | 后端初始化 | 首次配置后端环境时 |
-| [init_frontend.md](references/init_project/init_frontend.md) | 前端初始化 | 首次配置前端环境时 |
-| **run_project/** | 项目启动 | |
-| [start_backend.md](references/run_project/start_backend.md) | 启动后端服务 | 服务未运行时 |
-| [start_frontend.md](references/run_project/start_frontend.md) | 启动前端服务 | 服务未运行时 |
-| **workflow/** | 六阶段工作流 | |
-| [create_project.md](references/workflow/create_project.md) | 创建新项目 API | 开始新视频项目时 |
-| [create_script.md](references/workflow/create_script.md) | 剧本生成 API | 执行第一阶段时 |
-| [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API | 执行第二阶段时 |
-| [create_storyboard.md](references/workflow/create_storyboard.md) | 分镜设计 API/剧情续写 API | 执行第三阶段时/用户提出续写剧情时 |
-| [create_reference.md](references/workflow/create_reference.md) | 参考图生成 API | 执行第四阶段时 |
-| [create_video.md](references/workflow/create_video.md) | 视频生成 API | 执行第五阶段时 |
-| [create_post.md](references/workflow/create_post.md) | 后期剪辑 API | 执行第六阶段时 |
-| [modify_character.md](references/workflow/modify_character.md) | 修改角色提示词 | 用户要求修改角色时 |
-| [modify_storyboard.md](references/workflow/modify_storyboard.md) | 修改/续写分镜 | 用户要求修改/续写分镜时 |
-| [modify_reference.md](references/workflow/modify_reference.md) | 修改参考图提示词 | 用户要求修改参考图时 |
-| [modify_video.md](references/workflow/modify_video.md) | 修改视频提示词 | 用户要求修改视频时 |
-| **sandbox/** | 临时工作台 | |
-| [generate_image_t2i.md](references/sandbox/generate_image_t2i.md) | 文生图 API | 用户要求生成图片时 |
-| [generate_image_it2i.md](references/sandbox/generate_image_it2i.md) | 图生图/风格转换 API | 用户要求转换图片风格时 |
-| [generate_video.md](references/sandbox/generate_video.md) | 短视频生成 API | 用户要求生成15秒内视频时 |
-| **send_message/** | 消息发送 | |
-| [feishu.md](references/send_message/feishu.md) | 飞书发送媒体文件 | 用户通过飞书渠道发起对话，并且需要向用户发送图片/视频给用户时 |
-| [wechat.md](references/send_message/wechat.md) | 微信发送媒体文件 | 用户通过微信渠道发起对话，并且需要向用户发送图片/视频给用户时 |
+## 把结果交给用户
+
+每完成一件用户能感知的事，发一条简报：刚完成什么、下一步、需要用户决定什么。有文件就发文件。视频确认前必须展示报价（币种、min、max、来源 URL）和是否超预算。
+
+影响令牌、预算上调、视频 confirm，都等用户明确回复后再调用。不要替用户确认。
+
+飞书或微信发图片和视频时，读 [feishu.md](references/send_message/feishu.md) 或 [wechat.md](references/send_message/wechat.md)。
