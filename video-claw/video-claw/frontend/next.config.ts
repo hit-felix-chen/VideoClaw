@@ -8,6 +8,14 @@ const nextConfig: NextConfig = {
         destination: 'http://127.0.0.1:8000/code/:path*',
       },
       {
+        source: '/api/assets',
+        destination: 'http://127.0.0.1:8000/api/assets',
+      },
+      {
+        source: '/api/assets/:path*',
+        destination: 'http://127.0.0.1:8000/api/assets/:path*',
+      },
+      {
         source: '/api/sessions',
         destination: 'http://127.0.0.1:8000/api/sessions',
       },

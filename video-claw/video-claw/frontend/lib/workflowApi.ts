@@ -265,6 +265,38 @@ export function subscribePipelineTask(
   return () => source.close();
 }
 
+export interface LibraryAsset {
+  id: string;
+  name: string;
+  description: string;
+  selected: string;
+  versions: string[];
+  type: 'characters' | 'settings';
+}
+
+export async function listLibraryAssets(): Promise<{ assets: LibraryAsset[] }> {
+  const resp = await fetch('/api/assets');
+  if (!resp.ok) throw new Error('读取资产库失败');
+  return resp.json();
+}
+
+export async function importLibraryAsset(
+  sessionId: string,
+  itemType: 'characters' | 'settings',
+  itemId: string,
+): Promise<{ library_id: string; artifact?: { characters?: any[]; settings?: any[] } }> {
+  const resp = await fetch('/api/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId, item_type: itemType, item_id: itemId }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: '加入资产库失败' }));
+    throw new Error(err.detail || '加入资产库失败');
+  }
+  return resp.json();
+}
+
 export async function startProject(params: {
   idea: string;
   file_path?: string;
@@ -285,6 +317,7 @@ export async function startProject(params: {
   web_search?: boolean;
   expand_idea?: boolean;
   episodes?: number;
+  library_asset_ids?: string[];
 }): Promise<{ session_id: string; status: string; params: any }> {
   const resp = await fetch('/api/project/start', {
     method: 'POST',

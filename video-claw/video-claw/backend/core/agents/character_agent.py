@@ -15,8 +15,10 @@ import logging
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .base_agent import AgentInterface
+from assets.library import AssetLibrary
 from prompts.loader import load_prompt
+
+from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +115,20 @@ class CharacterDesignerAgent(AgentInterface):
 
     def _build_asset_info(self, sid: str, asset_type: str,
                           asset_id: str, name: str, desc: str,
-                          selected_path: str = "") -> dict:
+                          selected_path: str = "", library_id: str = "") -> dict:
         """构建单个素材的信息（含所有历史版本）"""
-        versions = self._list_versions(sid, asset_type, asset_id)
-        if not selected_path and versions:
-            selected_path = versions[-1]
+        local_versions = self._list_versions(sid, asset_type, asset_id)
+        bound = AssetLibrary.bound_path({"library_id": library_id}) if library_id else ""
+        versions = list(local_versions)
+        if bound and bound not in versions:
+            versions.append(bound)
+        if not selected_path:
+            if local_versions:
+                selected_path = local_versions[-1]
+            elif bound:
+                selected_path = bound
         status = "done" if selected_path or versions else "failed"
-        return {
+        item = {
             "id": asset_id,
             "name": name,
             "description": desc,
@@ -127,6 +136,113 @@ class CharacterDesignerAgent(AgentInterface):
             "versions": versions,
             "status": status,
         }
+        if library_id and AssetLibrary.get(library_id):
+            item["library_id"] = library_id
+        return item
+
+    def _asset_already_available(self, sid: str, asset_type: str, asset_id: str, info: Any) -> bool:
+        """Skip generation when this session already has a file, or library_id resolves.
+
+        A `selected` path that merely points at the library is not enough: `_list_versions`
+        only globs this session's Assets directory. A library_id counts only when its
+        current file exists, so a missing library image still generates.
+        """
+        if self._list_versions(sid, asset_type, asset_id):
+            return True
+        return bool(AssetLibrary.bound_path(info if isinstance(info, dict) else {}))
+
+    def _collect_generation_tasks(self, sid: str, chars_desc: dict, sets_desc: dict) -> List[tuple]:
+        tasks = []
+        for asset_id, info in chars_desc.items():
+            if self._asset_already_available(sid, "characters", asset_id, info):
+                continue
+            tasks.append((
+                "characters",
+                asset_id,
+                info.get("name", ""),
+                info.get("description", ""),
+                info.get("species", ""),
+            ))
+        for asset_id, info in sets_desc.items():
+            if self._asset_already_available(sid, "settings", asset_id, info):
+                continue
+            desc = info.get("description", "") if isinstance(info, dict) else info
+            name = info.get("name", "") if isinstance(info, dict) else ""
+            tasks.append(("settings", asset_id, name, desc, ""))
+        return tasks
+
+    def _apply_library_links(self, chars_desc: dict, sets_desc: dict, input_data: dict) -> None:
+        """Stamp library_id from an existing design row or from names chosen at project start."""
+        artifact = self._session_artifact(input_data, "character_design")
+        preselected = self._preselected_library_by_name(input_data)
+        self._stamp_library_ids(chars_desc, artifact.get("characters"), preselected.get("characters", {}))
+        self._stamp_library_ids(sets_desc, artifact.get("settings"), preselected.get("settings", {}))
+
+    def _preselected_library_by_name(self, input_data: dict) -> dict:
+        meta = self._session_meta(input_data)
+        raw = meta.get("library_asset_ids")
+        if not isinstance(raw, list):
+            raw = input_data.get("library_asset_ids") if isinstance(input_data, dict) else None
+        grouped = {"characters": {}, "settings": {}}
+        if not isinstance(raw, list):
+            return grouped
+        for library_id in raw:
+            record = AssetLibrary.get(str(library_id))
+            if not record:
+                continue
+            asset_type = record.get("type")
+            name = str(record.get("name") or "").strip()
+            if asset_type in grouped and name and name not in grouped[asset_type]:
+                grouped[asset_type][name] = record["id"]
+        return grouped
+
+    @staticmethod
+    def _stamp_library_ids(desc: dict, existing_items: Any, by_name: dict) -> None:
+        if not isinstance(desc, dict):
+            return
+        existing_by_id = {}
+        existing_by_name = {}
+        for item in existing_items or []:
+            if not isinstance(item, dict):
+                continue
+            library_id = str(item.get("library_id") or "").strip()
+            if not library_id or not AssetLibrary.get(library_id):
+                continue
+            if item.get("id"):
+                existing_by_id[item["id"]] = library_id
+            name = str(item.get("name") or "").strip()
+            if name and name not in existing_by_name:
+                existing_by_name[name] = library_id
+        for asset_id, info in desc.items():
+            if not isinstance(info, dict) or info.get("library_id"):
+                continue
+            library_id = existing_by_id.get(asset_id)
+            if not library_id:
+                name = str(info.get("name") or "").strip()
+                library_id = existing_by_name.get(name) or by_name.get(name)
+            if library_id:
+                info["library_id"] = library_id
+
+    def _preview_item(self, sid: str, asset_type: str, asset_id: str,
+                      name: str, desc: str, info: Any) -> dict:
+        local_versions = self._list_versions(sid, asset_type, asset_id)
+        library_id = info.get("library_id", "") if isinstance(info, dict) else ""
+        bound = AssetLibrary.bound_path({"library_id": library_id}) if library_id else ""
+        versions = list(local_versions)
+        if bound and bound not in versions:
+            versions.append(bound)
+        selected = local_versions[-1] if local_versions else (bound or "")
+        item = {
+            "id": asset_id,
+            "name": name,
+            "description": desc,
+            "selected": selected,
+            "versions": versions,
+            "status": "done" if selected else "pending",
+        }
+        if library_id and AssetLibrary.get(library_id):
+            item["library_id"] = library_id
+        return item
 
     @staticmethod
     def _collect_rewrite_results(artifact: dict) -> dict:
@@ -175,27 +291,18 @@ class CharacterDesignerAgent(AgentInterface):
         """构建素材预览列表（含当前状态）用于前端实时显示"""
         preview = {"characters": [], "settings": []}
         for asset_id, info in chars_desc.items():
-            existing = self._list_versions(sid, 'characters', asset_id)
-            preview["characters"].append({
-                "id": asset_id,
-                "name": info.get("name", ""),
-                "description": info.get("description", ""),
-                "selected": existing[-1] if existing else "",
-                "versions": existing,
-                "status": "done" if existing else "pending",
-            })
+            preview["characters"].append(self._preview_item(
+                sid, "characters", asset_id,
+                info.get("name", "") if isinstance(info, dict) else "",
+                info.get("description", "") if isinstance(info, dict) else str(info),
+                info,
+            ))
         for asset_id, info in sets_desc.items():
-            existing = self._list_versions(sid, 'settings', asset_id)
             name = info.get("name", "") if isinstance(info, dict) else ""
             desc = info.get("description", "") if isinstance(info, dict) else str(info)
-            preview["settings"].append({
-                "id": asset_id,
-                "name": name,
-                "description": desc,
-                "selected": existing[-1] if existing else "",
-                "versions": existing,
-                "status": "done" if existing else "pending",
-            })
+            preview["settings"].append(self._preview_item(
+                sid, "settings", asset_id, name, desc, info,
+            ))
         return preview
 
     def _generate_one(self, img_client, asset_id: str, name: str, desc: str,
@@ -497,11 +604,14 @@ class CharacterDesignerAgent(AgentInterface):
             if isinstance(input_chars, list):
                 for c in input_chars:
                     if isinstance(c, dict) and "id" in c:
-                        chars_desc[c["id"]] = {
+                        entry = {
                             "name": c.get("name", ""),
                             "description": c.get("description", ""),
                             "species": c.get("species", ""),
                         }
+                        if c.get("library_id"):
+                            entry["library_id"] = c.get("library_id")
+                        chars_desc[c["id"]] = entry
             elif isinstance(input_chars, dict):
                 chars_desc = input_chars
 
@@ -509,10 +619,13 @@ class CharacterDesignerAgent(AgentInterface):
             if isinstance(input_sets, list):
                 for s in input_sets:
                     if isinstance(s, dict) and "id" in s:
-                        sets_desc[s["id"]] = {
+                        entry = {
                             "name": s.get("name", ""),
                             "description": s.get("description", ""),
                         }
+                        if s.get("library_id"):
+                            entry["library_id"] = s.get("library_id")
+                        sets_desc[s["id"]] = entry
             elif isinstance(input_sets, dict):
                 sets_desc = input_sets
 
@@ -554,6 +667,8 @@ class CharacterDesignerAgent(AgentInterface):
                             sets_desc[asset_id]["description"] = str(info)
 
                 logger.info(f"[CharacterAgent] Updated descriptions for session {sid}")
+
+            self._apply_library_links(chars_desc, sets_desc, input_data)
 
             if regen_chars or regen_sets:
                 self._report_progress("角色设计", "重新生成中...", 10)
@@ -640,24 +755,14 @@ class CharacterDesignerAgent(AgentInterface):
         if not chars_desc and not sets_desc:
             raise Exception("未能从剧本中读取到角色或场景描述数据")
 
+        self._apply_library_links(chars_desc, sets_desc, input_data)
+
         # 发送素材预览（含所有素材和当前状态）
         preview = self._build_preview(sid, chars_desc, sets_desc)
         self._report_progress("角色设计", "加载素材列表", 8, data={"assets_preview": preview})
 
         def run():
-            all_tasks = []
-            for asset_id, info in chars_desc.items():
-                existing = self._list_versions(sid, 'characters', asset_id)
-                if existing:
-                    continue
-                all_tasks.append(("characters", asset_id, info.get("name", ""), info.get("description", ""), info.get("species", "")))
-
-            for asset_id, info in sets_desc.items():
-                desc = info.get("description", "") if isinstance(info, dict) else info
-                existing = self._list_versions(sid, 'settings', asset_id)
-                if existing:
-                    continue
-                all_tasks.append(("settings", asset_id, info.get("name", "") if isinstance(info, dict) else "", desc, ""))
+            all_tasks = self._collect_generation_tasks(sid, chars_desc, sets_desc)
 
             if not all_tasks:
                 self._report_progress("角色设计", "所有素材已存在", 95)
@@ -732,8 +837,9 @@ class CharacterDesignerAgent(AgentInterface):
         for asset_id, info in chars_desc.items():
             desc = info.get("description", "") if isinstance(info, dict) else info
             name = info.get("name", "") if isinstance(info, dict) else ""
+            library_id = info.get("library_id", "") if isinstance(info, dict) else ""
             sel = selected_chars.get(asset_id, "")
-            item = self._build_asset_info(sid, 'characters', asset_id, name, desc, sel)
+            item = self._build_asset_info(sid, 'characters', asset_id, name, desc, sel, library_id)
             if rewrite_results.get("characters", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["characters"][asset_id]
             characters.append(item)
@@ -742,8 +848,9 @@ class CharacterDesignerAgent(AgentInterface):
         for asset_id, info in sets_desc.items():
             desc = info.get("description", "") if isinstance(info, dict) else info
             name = info.get("name", "") if isinstance(info, dict) else ""
+            library_id = info.get("library_id", "") if isinstance(info, dict) else ""
             sel = selected_sets.get(asset_id, "")
-            item = self._build_asset_info(sid, 'settings', asset_id, name, desc, sel)
+            item = self._build_asset_info(sid, 'settings', asset_id, name, desc, sel, library_id)
             if rewrite_results.get("settings", {}).get(asset_id):
                 item["rewrite_result"] = rewrite_results["settings"][asset_id]
             settings_list.append(item)

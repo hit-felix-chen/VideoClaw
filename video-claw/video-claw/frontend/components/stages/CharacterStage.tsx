@@ -1,10 +1,10 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Users, MapPin, RefreshCw, Save, X, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Upload } from 'lucide-react';
+import { Users, MapPin, RefreshCw, Save, X, ChevronLeft, ChevronRight, Loader, AlertCircle, ZoomIn, ImagePlus, Edit2, Upload, FolderPlus } from 'lucide-react';
 import type { StageViewProps } from './types';
 import { assetUrl, assetVersionLabel } from './utils';
-import { uploadArtifactImage } from '@/lib/workflowApi';
+import { importLibraryAsset, uploadArtifactImage } from '@/lib/workflowApi';
 import StageActions from './StageActions';
 import StageProgress from './StageProgress';
 import ImageLightbox from './ImageLightbox';
@@ -19,6 +19,7 @@ interface AssetVersion {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';  // 生成状态
   rewrite_result?: RewriteResult;
+  library_id?: string;
 }
 
 /* ─── 水平滚动图片画廊 ─── */
@@ -141,9 +142,11 @@ function AssetRow({
   onCancelEdit,
   onToggleEdit,
   onUploadImage,
+  onAddToLibrary,
   isStageRunning,
   isRegenerating,
   isUploading,
+  isSavingLibrary,
 }: {
   asset: AssetVersion;
   type: 'character' | 'setting';
@@ -156,9 +159,11 @@ function AssetRow({
   onCancelEdit: () => void;
   onToggleEdit: () => void;
   onUploadImage: (file: File) => void;
+  onAddToLibrary: () => void;
   isStageRunning?: boolean;
   isRegenerating?: boolean;
   isUploading?: boolean;
+  isSavingLibrary?: boolean;
 }) {
   const isRunning = asset.status === 'running' || isRegenerating;
   const isPending = asset.status === 'pending';
@@ -239,6 +244,25 @@ function AssetRow({
             >
               <RefreshCw className="w-3 h-3" />
               {isFailed ? '点击重试' : hasImage ? '重新生成' : '生成'}
+            </button>
+          )}
+          {hasImage && asset.library_id && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-medium text-emerald-700 bg-emerald-50">
+              已在资产库
+            </span>
+          )}
+          {hasImage && !asset.library_id && (
+            <button
+              onClick={onAddToLibrary}
+              disabled={isSavingLibrary}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                isSavingLibrary
+                  ? 'text-gray-400 bg-gray-100 cursor-wait'
+                  : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+              }`}
+            >
+              {isSavingLibrary ? <Loader className="w-3 h-3 animate-spin" /> : <FolderPlus className="w-3 h-3" />}
+              {isSavingLibrary ? '加入中...' : '加入资产库'}
             </button>
           )}
           <label className={`ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
@@ -346,6 +370,7 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
   const regenerationStartCounts = useRef<Record<string, number>>({});
   const [editingIds, setEditingIds] = useState<Set<string>>(new Set());
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set());
+  const [libraryIds, setLibraryIds] = useState<Set<string>>(new Set());
 
   const allAssets = React.useMemo(() => [...characters, ...settingsData], [characters, settingsData]);
 
@@ -425,6 +450,27 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
       console.error('上传图片失败:', error);
     } finally {
       setUploadingIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleAddToLibrary = async (type: 'characters' | 'settings', id: string) => {
+    setLibraryIds(prev => new Set(prev).add(id));
+    try {
+      const result = await importLibraryAsset(sessionId, type, id);
+      if (result.artifact) {
+        onUpdateArtifact?.({
+          characters: result.artifact.characters || [],
+          settings: result.artifact.settings || [],
+        });
+      }
+    } catch (error) {
+      console.error('加入资产库失败:', error);
+    } finally {
+      setLibraryIds(prev => {
         const next = new Set(prev);
         next.delete(id);
         return next;
@@ -513,9 +559,11 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
                   onSaveEdit={() => saveEdit(asset.id)}
                   onCancelEdit={() => cancelEdit(asset.id)}
                   onUploadImage={file => handleUploadImage('characters', asset.id, file)}
+                  onAddToLibrary={() => handleAddToLibrary('characters', asset.id)}
                   isStageRunning={state.status === 'running'}
                   isRegenerating={regeneratingIds.has(asset.id)}
                   isUploading={uploadingIds.has(asset.id)}
+                  isSavingLibrary={libraryIds.has(asset.id)}
                 />
               ))}
             </div>
@@ -544,9 +592,11 @@ export default function CharacterStage({ state, sessionId, onConfirm, onInterven
                   onSaveEdit={() => saveEdit(asset.id)}
                   onCancelEdit={() => cancelEdit(asset.id)}
                   onUploadImage={file => handleUploadImage('settings', asset.id, file)}
+                  onAddToLibrary={() => handleAddToLibrary('settings', asset.id)}
                   isStageRunning={state.status === 'running'}
                   isRegenerating={regeneratingIds.has(asset.id)}
                   isUploading={uploadingIds.has(asset.id)}
+                  isSavingLibrary={libraryIds.has(asset.id)}
                 />
               ))}
             </div>

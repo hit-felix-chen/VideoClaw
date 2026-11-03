@@ -542,6 +542,7 @@ export default function WorkflowPanel() {
         web_search: params.web_search,
         expand_idea: params.expand_idea,
         episodes: params.episodes,
+        library_asset_ids: params.library_asset_ids,
       });
       setSessionId(result.session_id);
 

@@ -94,6 +94,22 @@ curl -X POST "http://localhost:8000/api/project/{session_id}/continue"
 
 ---
 
+## 全局资产库
+
+角色或场景可以收藏到与 session 无关的资产库，新项目按名字复用，避免重复生成。图片和 JSON 在 `code/data/assets/{asset_id}/`（不要放到 `code/result/image/`，孤立文件清理会删掉那里的非 session 目录）。
+
+```bash
+curl -X POST "http://localhost:8000/api/assets" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"{session_id}","item_type":"characters","item_id":"char_1"}'
+```
+
+`item_type` 为 `characters` 或 `settings`。成功后该会话资产带上 `library_id`。第二阶段只在这个 id 能解析到现存文件时跳过生成；文件丢失则照常生成。
+
+库里的图换掉之后，下一次重新生成参考图或视频会读库中当前的 `selected`。已完成的视频不会因此重跑。
+
+创建项目时可选 `library_asset_ids`（见同目录 `create_project.md` 末尾）。`@` 引用不在本能力里，分镜仍按角色名子串匹配。
+
 ## 常见问题
 
 | 错误 | 原因 | 解决方法 |

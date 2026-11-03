@@ -15,6 +15,8 @@ import logging
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from assets.library import AssetLibrary
+
 from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
@@ -277,6 +279,12 @@ class VideoDirectorAgent(AgentInterface):
 
     @staticmethod
     def _asset_selected_path(asset: dict) -> str:
+        # library_id wins over the session's stored selected path, so a library
+        # image change is visible the next time this clip is regenerated.
+        # Finished videos are still skipped by _list_versions and are not rerun.
+        bound = AssetLibrary.bound_path(asset)
+        if bound:
+            return bound
         selected = asset.get("selected") or ""
         if selected and os.path.exists(selected):
             return selected

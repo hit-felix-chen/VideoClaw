@@ -327,6 +327,7 @@ class Config:
             cls.CODE_DIR,
             data_dir,
             cls.SESSION_DIR,
+            os.path.join(data_dir, "assets"),
             cls.TASK_DIR,
             cls.RESULT_DIR,
             cls.TASK_RESULT_DIR,

@@ -74,3 +74,14 @@ shutil.copy2(backend_path, local_path)
 | `404 Not Found` | 路径格式错误 | 使用 `code/result/...` 格式 |
 | `"error": "image not found"` | 图片文件不存在 | 检查图片路径是否正确 |
 | `"success": false` | API Key 额度用完或无效 | 检查对应平台的 API Key |
+
+## 从资产库预填角色/场景
+
+`POST /api/project/start` 可额外带 `library_asset_ids`（`GET /api/assets` 返回的 id）。这些资产会写入新会话的 `character_design`，`selected` 指向 `code/data/assets/{asset_id}/` 里的图片。第二阶段按角色/场景名字对齐后，对仍能解析到文件的 `library_id` 跳过生成。
+
+资产库接口：
+
+- `GET /api/assets`
+- `POST /api/assets`，body：`{"session_id","item_type","item_id"}`，`item_type` 为 `characters` 或 `settings`。会在该会话资产上写入 `library_id`。
+- `PATCH /api/assets/{id}`，可改 `name`、`description`，或用 `source_path` 追加一张新图并把它设为 `selected`。
+- `DELETE /api/assets/{id}`

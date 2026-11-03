@@ -1,7 +1,7 @@
 ﻿'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, Play, Settings2, Clock, ArrowRight, Zap, CheckCircle, Trash2, X, Lock, Globe, ListOrdered, Upload, Loader2 } from 'lucide-react';
+import { Sparkles, Play, Settings2, Clock, ArrowRight, Zap, CheckCircle, Trash2, X, Lock, Globe, ListOrdered, Upload, Loader2, Library } from 'lucide-react';
 import clsx from 'clsx';
 import { PROMPT_EXAMPLES } from '@/config/examples';
 import {
@@ -14,6 +14,7 @@ import {
 } from '@/config/models';
 import { STAGES } from './TopBar';
 import { fetchModelGroupsByType, fetchVideoModelGroupsByAbility } from '@/lib/modelRegistry';
+import { listLibraryAssets, type LibraryAsset } from '@/lib/workflowApi';
 
 export interface ProjectParams {
   idea: string;
@@ -34,6 +35,7 @@ export interface ProjectParams {
   enable_concurrency?: boolean;
   web_search?: boolean;
   episodes?: number;
+  library_asset_ids?: string[];
 }
 
 interface HistoryItem {
@@ -86,6 +88,8 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [webSearch, setWebSearch] = useState(false);
   const [episodes, setEpisodes] = useState(4);
   const [showEpisodesPanel, setShowEpisodesPanel] = useState(false);
+  const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
+  const [selectedLibraryIds, setSelectedLibraryIds] = useState<string[]>([]);
 
   // 上传相关状态
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -112,6 +116,14 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         : selectedFirstFrameVideo;
   const modelConfigReady = Boolean(selectedLLM && selectedVLM && selectedT2I && selectedI2I && activeVideoModel && selectedRatio && selectedResolution);
   const canStart = Boolean((idea.trim() || uploadedFile) && modelConfigReady && !configLoading);
+
+  useEffect(() => {
+    let cancelled = false;
+    listLibraryAssets()
+      .then(data => { if (!cancelled) setLibraryAssets(data.assets || []); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,7 +246,12 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       enable_concurrency: enableConcurrency,
       web_search: webSearch,
       episodes,
+      library_asset_ids: selectedLibraryIds,
     }, auto);
+  };
+
+  const toggleLibraryAsset = (id: string) => {
+    setSelectedLibraryIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
   };
 
   const handleExampleClick = (text: string) => {
@@ -314,6 +331,36 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
               }
             }}
           />
+
+          {libraryAssets.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              <div className="flex items-center gap-1.5 mb-2 text-xs font-medium text-gray-500">
+                <Library className="w-3.5 h-3.5" />
+                从资产库选择
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {libraryAssets.map(asset => {
+                  const selected = selectedLibraryIds.includes(asset.id);
+                  return (
+                    <button
+                      key={asset.id}
+                      type="button"
+                      onClick={() => toggleLibraryAsset(asset.id)}
+                      className={clsx(
+                        'px-2.5 py-1 rounded-lg text-xs border transition-colors',
+                        selected
+                          ? 'bg-violet-50 text-violet-700 border-violet-200'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                      )}
+                      title={asset.description}
+                    >
+                      {asset.type === 'settings' ? '场景' : '角色'} · {asset.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100">
             <div className="flex items-center gap-3">

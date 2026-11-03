@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -22,8 +22,21 @@ class ProjectStartRequest(BaseModel):
     enable_concurrency: Optional[bool] = True
     web_search: Optional[bool] = False
     episodes: Optional[int] = None
+    library_asset_ids: Optional[List[str]] = None
 
 
 class InterventionRequest(BaseModel):
     stage: str
     modifications: Dict[str, Any]
+
+
+class AssetImportRequest(BaseModel):
+    session_id: str
+    item_type: str
+    item_id: str
+
+
+class AssetUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    source_path: Optional[str] = None

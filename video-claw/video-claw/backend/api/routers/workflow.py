@@ -11,6 +11,7 @@ from api.services.project_helpers import (
     make_progress_channel,
     stream_workflow_task,
 )
+from assets.library import AssetLibrary
 from config import settings
 
 router = APIRouter(tags=["Workflow"])
@@ -56,6 +57,13 @@ def _require_model_fields(values: dict) -> None:
 async def start_project(req: ProjectStartRequest):
     final_idea = merge_uploaded_file_into_idea(req.idea, req.file_path)
     _require_model_fields(req.model_dump())
+    library_ids = []
+    for item in req.library_asset_ids or []:
+        if item and item not in library_ids:
+            library_ids.append(item)
+    missing = [item for item in library_ids if AssetLibrary.get(item) is None]
+    if missing:
+        raise HTTPException(400, detail=f"Unknown library assets: {', '.join(missing)}")
 
     session_id = str(int(time.time() * 1000))
     meta = {
@@ -79,8 +87,16 @@ async def start_project(req: ProjectStartRequest):
         "web_search": req.web_search if req.web_search is not None else False,
         "episodes": req.episodes if req.episodes is not None else 4,
     }
+    if library_ids:
+        meta["library_asset_ids"] = library_ids
     meta["video_model"] = _active_video_model(meta)
     session = workflow_engine.create_session(session_id, meta)
+    if library_ids:
+        try:
+            workflow_engine.seed_library_assets(session_id, library_ids)
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else "unknown"
+            raise HTTPException(400, detail=f"Unknown library asset: {missing}") from exc
 
     return {
         "session_id": session_id,
@@ -101,6 +117,7 @@ async def start_project(req: ProjectStartRequest):
             "episodes": meta["episodes"],
             "video_ratio": meta["video_ratio"],
             "video_resolution": meta["video_resolution"],
+            "library_asset_ids": library_ids,
         }
     }
 

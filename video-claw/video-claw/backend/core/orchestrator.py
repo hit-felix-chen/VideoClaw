@@ -1473,6 +1473,98 @@ class WorkflowEngine:
             except Exception as e:
                 logger.warning(f"Failed to load session {filename}: {e}")
 
+    def seed_library_assets(self, session_id: str, library_asset_ids: List[str]) -> Dict[str, Any]:
+        """Copy chosen library records into the new session's character_design."""
+        from assets.library import AssetLibrary
+
+        with self._state_lock:
+            state = self.get_state(session_id)
+            if not state:
+                raise KeyError(f"Session not found: {session_id}")
+            characters: List[dict] = []
+            settings_list: List[dict] = []
+            for library_id in library_asset_ids:
+                record = AssetLibrary.get(library_id)
+                if not record:
+                    raise KeyError(library_id)
+                item = AssetLibrary.as_session_asset(record)
+                if record.get("type") == "settings":
+                    settings_list.append(item)
+                else:
+                    characters.append(item)
+            state.artifacts["character_design"] = {
+                "characters": characters,
+                "settings": settings_list,
+            }
+            state.meta["library_asset_ids"] = list(library_asset_ids)
+            self.save_session_to_disk(session_id)
+            return copy.deepcopy(state.artifacts["character_design"])
+
+    def import_session_asset(self, session_id: str, item_type: str, item_id: str) -> Dict[str, Any]:
+        """Copy a session character/setting into the library and stamp library_id."""
+        from assets.library import AssetLibrary
+
+        if item_type not in ("characters", "settings"):
+            raise ValueError("item_type must be characters or settings")
+
+        with self._state_lock:
+            state = self.get_state(session_id)
+            if not state:
+                raise KeyError(f"Session not found: {session_id}")
+            artifact = state.artifacts.get("character_design") or {}
+            items = artifact.get(item_type) if isinstance(artifact, dict) else None
+            if not isinstance(items, list):
+                raise KeyError(f"Asset not found: {item_id}")
+            target = next(
+                (item for item in items if isinstance(item, dict) and item.get("id") == item_id),
+                None,
+            )
+            if target is None:
+                raise KeyError(f"Asset not found: {item_id}")
+
+            existing_id = str(target.get("library_id") or "").strip()
+            existing = AssetLibrary.get(existing_id) if existing_id else None
+            if existing:
+                return {
+                    "status": "ok",
+                    "library_id": existing_id,
+                    "asset": existing,
+                    "session_id": session_id,
+                    "item_id": item_id,
+                    "item_type": item_type,
+                    "artifact": copy.deepcopy(artifact),
+                }
+
+            source = ""
+            selected = target.get("selected") or ""
+            if AssetLibrary.file_exists(selected):
+                source = selected
+            else:
+                for path in reversed(target.get("versions") or []):
+                    if AssetLibrary.file_exists(path):
+                        source = path
+                        break
+            if not source:
+                raise ValueError("Asset has no image to import")
+
+            record = AssetLibrary.create_from_file(
+                name=str(target.get("name") or item_id),
+                description=str(target.get("description") or ""),
+                asset_type=item_type,
+                source_path=source,
+            )
+            target["library_id"] = record["id"]
+            self.save_session_to_disk(session_id)
+            return {
+                "status": "ok",
+                "library_id": record["id"],
+                "asset": record,
+                "session_id": session_id,
+                "item_id": item_id,
+                "item_type": item_type,
+                "artifact": copy.deepcopy(state.artifacts.get("character_design")),
+            }
+
     def delete_session(self, session_id: str) -> bool:
         """删除指定会话（内存 + 磁盘 + 结果文件）"""
         from config import settings

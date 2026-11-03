@@ -16,8 +16,10 @@ import logging
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .base_agent import AgentInterface
+from assets.library import AssetLibrary
 from prompts.loader import load_prompt
+
+from .base_agent import AgentInterface
 
 logger = logging.getLogger(__name__)
 
@@ -92,14 +94,14 @@ class ReferenceGeneratorAgent(AgentInterface):
         # 处理角色
         for char in character_design.get('characters', []):
             cid = char.get('id') or char.get('character_id')
-            selected = char.get('selected')
+            selected = AssetLibrary.bound_path(char) or char.get('selected')
             if cid and selected:
                 am['characters'][cid] = selected
-                
+
         # 处理场景
         for setting in character_design.get('settings', []):
             sid = setting.get('id') or setting.get('setting_id')
-            selected = setting.get('selected')
+            selected = AssetLibrary.bound_path(setting) or setting.get('selected')
             if sid and selected:
                 am['settings'][sid] = selected
                 

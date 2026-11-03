@@ -290,7 +290,7 @@ send_to_user(f"📊 查看详情：{frontend_url}")
 | **workflow/** | 六阶段工作流 | |
 | [create_project.md](references/workflow/create_project.md) | 创建新项目 API | 开始新视频项目时 |
 | [create_script.md](references/workflow/create_script.md) | 剧本生成 API | 执行第一阶段时 |
-| [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API | 执行第二阶段时 |
+| [create_character.md](references/workflow/create_character.md) | 角色/场景设计 API，含全局资产库 | 执行第二阶段或收藏/复用角色场景时 |
 | [create_storyboard.md](references/workflow/create_storyboard.md) | 分镜设计 API/剧情续写 API | 执行第三阶段时/用户提出续写剧情时 |
 | [create_reference.md](references/workflow/create_reference.md) | 参考图生成 API | 执行第四阶段时 |
 | [create_video.md](references/workflow/create_video.md) | 视频生成 API | 执行第五阶段时 |
