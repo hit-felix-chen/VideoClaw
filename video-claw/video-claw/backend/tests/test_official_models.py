@@ -91,6 +91,8 @@ class TestDefaultsAndAliases:
         kling = ModelRegistry.get("kling-v3")
         omni = ModelRegistry.get("gemini-omni-1.1-flash")
         assert kling.openai_compatible is False
+        assert ModelRegistry.get("kling-v2-6").openai_compatible is False
+        assert ModelRegistry.get("kling-v2-5-turbo").openai_compatible is False
         assert omni.openai_compatible is False
         assert ModelRegistry.adapter_for(kling, "llm") is None
         assert ModelRegistry.adapter_for(omni, "llm") is None

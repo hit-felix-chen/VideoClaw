@@ -98,6 +98,7 @@ class SpecCatalog:
             max_reference_images=SpecCatalog._optional_int(caps.get("max_reference_images")),
             max_reference_images_verified=bool(caps.get("max_reference_images_verified", False)),
             deprecated=_CONFIG_DEPRECATED.get(model_id, ""),
+            openai_compatible=False if (metadata.get("provider") == "kling") else None,
         )
 
     @staticmethod
