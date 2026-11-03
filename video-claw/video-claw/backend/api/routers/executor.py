@@ -13,6 +13,7 @@ from api.routers.library import get_library_connection
 from api.schemas.executor import (
     BudgetRaiseRequest,
     ImpactConfirmRequest,
+    ImpactRegenerateRequest,
     ImpactRequest,
     NodeRunRequest,
 )
@@ -155,4 +156,21 @@ def impact_confirm(
             body.confirm_token,
             model=body.model,
             unit_cost=body.unit_cost,
+        )
+
+
+@router.post("/api/v2/projects/{project_id}/impact/regenerate")
+def impact_regenerate(
+    project_id: str,
+    body: ImpactRegenerateRequest,
+    conn: StoreConnection = Depends(get_library_connection),
+):
+    """Regenerate nodes from a confirmed impact set. Does not call a provider."""
+    params = body.model_dump(exclude={"confirm_token", "node_ids"})
+    with _errors():
+        return _executor(conn).regenerate_impact(
+            project_id,
+            body.confirm_token,
+            body.node_ids,
+            params,
         )

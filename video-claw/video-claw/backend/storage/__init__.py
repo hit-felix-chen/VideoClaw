@@ -13,13 +13,15 @@ version history, and rollback. ``SegmentRefStore`` binds a segment to an
 asset and a look. ``RegenerationQuote`` prices a stale regenerate from
 PriceBook when a model is named, and does not spend. ``LedgerStore`` records pre-call quotes and actual charges on
 the ``ledger`` table; the budget gate that writes those rows lives in
-``models.middle``. A look change marks dependents stale in ``node_state``
+``models.middle``. ``ImpactConfirmation`` stores the look-impact token
+that authorizes a downstream regenerate. A look change marks dependents stale in ``node_state``
 and, when the project has an R6 snapshot, in that graph (see
 ``storage.staleness``).
 """
 
 from storage.assets import AssetStore, ImageStore, LookStore
 from storage.blobs import BlobStore
+from storage.confirmations import ImpactConfirmation
 from storage.database import (
     AssetNotFoundError,
     BlobNotFoundError,
@@ -46,6 +48,7 @@ __all__ = [
     "BlobStore",
     "Database",
     "GraphStore",
+    "ImpactConfirmation",
     "ImageNotFoundError",
     "ImageStore",
     "LedgerStore",
