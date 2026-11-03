@@ -12,7 +12,7 @@ from core.agents.base_agent import SESSION_PARAM_KEYS
 from core.agents.last_frame_chain import LastFrameChain
 from core.agents.video_agent import VideoDirectorAgent
 from core.orchestrator import WorkflowEngine
-from pipelines.utils import VideoFrameExtractor, extract_last_frame
+from core.utils.video_frames import VideoFrameExtractor, extract_last_frame
 
 
 def _reference(seg):
@@ -352,7 +352,7 @@ async def test_process_chain_orders_inside_episode_and_stops_at_boundary(monkeyp
         return output
 
     monkeypatch.setattr(LastFrameChain, "frame_path", staticmethod(frame_path))
-    monkeypatch.setattr("pipelines.utils.extract_last_frame", fake_extract)
+    monkeypatch.setattr("core.utils.video_frames.extract_last_frame", fake_extract)
     data = _storyboard([
         {"episode_number": 1, "segments": [_shot("a", 1), _shot("b", 1)]},
         {"episode_number": 2, "segments": [_shot("c", 2), _shot("d", 2)]},
@@ -397,7 +397,7 @@ async def test_process_regenerate_cascade_and_stale(monkeypatch, tmp_path):
         return output
 
     monkeypatch.setattr(LastFrameChain, "frame_path", staticmethod(frame_path))
-    monkeypatch.setattr("pipelines.utils.extract_last_frame", fake_extract)
+    monkeypatch.setattr("core.utils.video_frames.extract_last_frame", fake_extract)
 
     episodes = [{
         "episode_number": 1,

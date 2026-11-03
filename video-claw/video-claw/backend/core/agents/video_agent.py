@@ -534,7 +534,7 @@ class VideoDirectorAgent(AgentInterface):
                     if prev_video:
                         frame_path = plan["img_path"]
                         try:
-                            from pipelines.utils import extract_last_frame
+                            from core.utils.video_frames import extract_last_frame
                             extract_last_frame(prev_video, frame_path)
                             if os.path.exists(frame_path):
                                 img_path = frame_path

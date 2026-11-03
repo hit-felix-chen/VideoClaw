@@ -15,7 +15,6 @@ from api.schemas.pipelines import (
     StandardPipelineRequest,
 )
 from config import BASE_DIR
-from models.config_model import get_models_by_type, model_type_capabilities
 from pipelines.api_media import list_api_workflows
 from pipelines.events import task_event_stream
 from pipelines.runner import PIPELINE_REGISTRY, run_pipeline_task
@@ -144,64 +143,6 @@ async def get_api_workflows(
             required_adapter_abilities=required,
             verified_only=verified_only,
         )
-    }
-
-
-@router.get("/api/models")
-async def get_api_models(
-    media_type: Optional[str] = Query(None, pattern="^(image|video)$"),
-    model_type: Optional[str] = Query(None, pattern="^(llm|vlm|t2i|i2i|video)$"),
-    ability: Optional[str] = Query(None),
-    verified_only: bool = False,
-):
-    if model_type:
-        models = []
-        for model in get_models_by_type(model_type):
-            capabilities = model_type_capabilities(model_type, model)
-            models.append({
-                "id": model["id"],
-                "label": model.get("name") or model["id"],
-                "provider": model.get("provider"),
-                "family": model.get("family"),
-                "model_type": model_type,
-                "type": model.get("type", []),
-                "concurrency": model.get("concurrency"),
-                "ability_type": capabilities.get("ability_type"),
-                "ability_types": capabilities.get("ability_types", []),
-                "adapter_ability_types": capabilities.get("adapter_ability_types", []),
-                "input_modalities": capabilities.get("input_modalities", []),
-                "adapter_input_modalities": capabilities.get("adapter_input_modalities", []),
-                "api_contract_verified": capabilities.get("api_contract_verified", False),
-                "capabilities": capabilities,
-            })
-        return {
-            "models": models
-        }
-
-    required = [ability] if ability else None
-    workflows = list_api_workflows(
-        media_type=media_type,
-        required_adapter_abilities=required,
-        verified_only=verified_only,
-    )
-    return {
-        "models": [
-            {
-                "id": workflow["model"],
-                "label": workflow.get("display_name") or workflow["model"],
-                "provider": workflow.get("provider"),
-                "family": workflow.get("family"),
-                "media_type": workflow.get("media_type"),
-                "ability_type": workflow.get("ability_type"),
-                "ability_types": workflow.get("ability_types", []),
-                "adapter_ability_types": workflow.get("adapter_ability_types", []),
-                "input_modalities": workflow.get("input_modalities", []),
-                "adapter_input_modalities": workflow.get("adapter_input_modalities", []),
-                "api_contract_verified": workflow.get("api_contract_verified", False),
-                "capabilities": workflow.get("capabilities", {}),
-            }
-            for workflow in workflows
-        ]
     }
 
 
