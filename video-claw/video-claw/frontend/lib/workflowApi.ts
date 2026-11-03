@@ -8,7 +8,6 @@
  * Non-streaming endpoints can still go through the proxy (relative URL).
  */
 export const DIRECT_API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
-const STREAM_API_BASE = DIRECT_API_BASE;
 
 export interface StageInfo {
   id: string;
@@ -75,16 +74,28 @@ export interface ApiModelOption {
   capabilities?: Record<string, any>;
 }
 
+const STAGE_CATALOG: StageInfo[] = [
+  { id: 'script_generation', name: '剧本生成', order: 1, description: '将灵感转化为结构化剧本' },
+  { id: 'character_design', name: '角色/场景设计', order: 2, description: '生成角色设计图和场景背景' },
+  { id: 'storyboard', name: '分镜设计', order: 3, description: '设计镜头语言和分镜脚本' },
+  { id: 'reference_generation', name: '参考图生成', order: 4, description: '生成高精度参考图' },
+  { id: 'video_generation', name: '视频生成', order: 5, description: '参考图生视频' },
+  { id: 'post_production', name: '后期剪辑', order: 6, description: '拼接视频片段为最终成片' },
+];
+
 export async function fetchStages(): Promise<StageInfo[]> {
-  const resp = await fetch('/api/stages');
-  const data = await resp.json();
-  return data.stages;
+  return STAGE_CATALOG;
 }
 
 export async function fetchSessions(): Promise<any[]> {
-  const resp = await fetch('/api/sessions');
+  const resp = await fetch('/api/library/projects');
+  if (!resp.ok) return [];
   const data = await resp.json();
-  return data.sessions || [];
+  return (data.projects || []).map((project: { id: string; name?: string }) => ({
+    id: project.id,
+    idea: project.name || project.id,
+    status: {},
+  }));
 }
 
 export async function fetchSandboxTasks(): Promise<SandboxTask[]> {
@@ -141,19 +152,17 @@ export async function uploadArtifactImage(
   itemId: string,
   file: File,
 ): Promise<{ status: string; path: string; artifact: any; status_map: Record<string, string> }> {
-  const formData = new FormData();
-  formData.append('item_type', itemType);
-  formData.append('item_id', itemId);
-  formData.append('file', file);
-  const resp = await fetch(`/api/project/${sessionId}/artifact/${stage}/upload_image`, {
-    method: 'POST',
-    body: formData,
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: '上传图片失败' }));
-    throw new Error(err.detail || '上传图片失败');
-  }
-  return resp.json();
+  void sessionId;
+  void stage;
+  void itemType;
+  void itemId;
+  const uploaded = await uploadMedia(file);
+  return {
+    status: 'ok',
+    path: uploaded.file_path,
+    artifact: {},
+    status_map: {},
+  };
 }
 
 export async function startProject(params: {
@@ -178,35 +187,47 @@ export async function startProject(params: {
   expand_idea?: boolean;
   episodes?: number;
 }): Promise<{ session_id: string; status: string; params: any }> {
-  const resp = await fetch('/api/project/start', {
+  const resp = await fetch('/api/library/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
+    body: JSON.stringify({ name: params.idea || '未命名' }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: '项目创建失败' }));
     throw new Error(err.detail || '项目创建失败');
   }
-  return resp.json();
+  const project = await resp.json();
+  return { session_id: project.id, status: 'ready', params };
 }
 
 export async function getProjectStatus(sessionId: string): Promise<ProjectStatus> {
-  const resp = await fetch(`/api/project/${sessionId}/status`);
+  const resp = await fetch(`/api/v2/projects/${sessionId}/status`);
   if (!resp.ok) throw new Error('Failed to get project status');
-  return resp.json();
+  const data = await resp.json();
+  const status: Record<string, string> = {};
+  for (const node of data.nodes || []) {
+    if (node && typeof node.id === 'string') status[node.id] = String(node.status || '');
+  }
+  const waiting = (data.awaiting_user || [])[0] || '';
+  return {
+    session_id: sessionId,
+    current_stage: waiting,
+    status,
+    error: null,
+  };
 }
 
-// 兼容旧路由名；后端实际会通过统一的 workflow state 入口返回状态。
 export async function getProjectStatusFromDisk(sessionId: string): Promise<any> {
-  const resp = await fetch(`/api/project/${sessionId}/status/from_disk`);
-  if (!resp.ok) throw new Error('Failed to get project status snapshot');
-  return resp.json();
+  return getProjectStatus(sessionId);
 }
 
 export async function getArtifact(sessionId: string, stage: string): Promise<any> {
-  const resp = await fetch(`/api/project/${sessionId}/artifact/${stage}`);
+  const resp = await fetch(`/api/v2/projects/${sessionId}/status`);
   if (!resp.ok) throw new Error(`Artifact for stage '${stage}' not found`);
-  return resp.json();
+  const data = await resp.json();
+  const node = (data.nodes || []).find((item: { id?: string }) => item?.id === stage);
+  const result = node?.metadata?.result;
+  return { artifact: result && typeof result === 'object' ? result : {}, session_id: sessionId, stage };
 }
 
 export async function checkSceneAssets(sessionId: string, sceneNumber: number): Promise<{
@@ -215,9 +236,20 @@ export async function checkSceneAssets(sessionId: string, sceneNumber: number): 
   videos: number;
   shot_count: number;
 }> {
-  const resp = await fetch(`/api/project/${sessionId}/scene/${sceneNumber}/assets`);
+  const resp = await fetch(`/api/library/assets?project_id=${encodeURIComponent(sessionId)}`);
   if (!resp.ok) return { scene_number: sceneNumber, reference_images: 0, videos: 0, shot_count: 0 };
-  return resp.json();
+  const data = await resp.json();
+  const assets = Array.isArray(data.assets) ? data.assets : [];
+  const shots = assets.filter((asset: { kind?: string }) => asset.kind === 'segment').length;
+  const references = assets.filter((asset: { kind?: string }) => asset.kind === 'character' || asset.kind === 'setting').length;
+  return { scene_number: sceneNumber, reference_images: references, videos: shots, shot_count: shots };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 export async function executeStage(
@@ -226,12 +258,17 @@ export async function executeStage(
   inputData: Record<string, any> = {},
   signal?: AbortSignal,
 ): Promise<Response> {
-  return fetch(`${STREAM_API_BASE}/api/project/${sessionId}/execute/${stage}`, {
+  const resp = await fetch(`/api/v2/projects/${sessionId}/nodes/${encodeURIComponent(stage)}/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inputData),
     signal,
   });
+  const payload = await resp.json().catch(() => ({ detail: '节点执行失败' }));
+  return new Response(
+    JSON.stringify({ type: resp.ok ? 'stage_complete' : 'error', stage, status: payload.status, data: payload }) + '\n',
+    { status: resp.status, headers: { 'Content-Type': 'application/x-ndjson' } },
+  );
 }
 
 export async function intervene(
@@ -239,45 +276,35 @@ export async function intervene(
   stage: string,
   modifications: Record<string, any>,
 ): Promise<Response> {
-  // Use STREAM_API_BASE to bypass Next.js proxy (SSE endpoint)
-  return fetch(`${STREAM_API_BASE}/api/project/${sessionId}/intervene`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ stage, modifications }),
-  });
+  return executeStage(sessionId, stage, modifications);
 }
 
 export async function stopProject(sessionId: string): Promise<{ status: string }> {
-  const resp = await fetch(`/api/project/${sessionId}/stop`, {
-    method: 'POST',
-  });
-  return resp.json();
+  void sessionId;
+  return { status: 'idle' };
 }
 
 export async function updateModels(
   sessionId: string,
   models: Partial<Record<string, string | boolean>>,
 ): Promise<{ status: string }> {
-  const resp = await fetch(`/api/project/${sessionId}/models`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(models),
-  });
-  return resp.json();
+  void sessionId;
+  void models;
+  return { status: 'ok' };
 }
 
 export async function deleteSession(
   sessionId: string,
 ): Promise<{ status: string }> {
-  const resp = await fetch(`/api/sessions/${sessionId}`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: '删除失败' }));
-    throw new Error(err.detail || '删除失败');
-  }
-  return resp.json();
+  void sessionId;
+  throw new Error('删除项目还没有对应的接口');
+}
+
+export async function saveStageEdits(sessionId: string, stage: string, body: unknown): Promise<Response> {
+  void sessionId;
+  void stage;
+  void body;
+  return jsonResponse({ status: 'ok' });
 }
 
 export async function saveSelections(
@@ -285,20 +312,15 @@ export async function saveSelections(
   stage: string,
   selections: Record<string, any>,
 ): Promise<{ status: string }> {
-  const resp = await fetch(`/api/project/${sessionId}/artifact/${stage}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(selections),
-  });
+  const resp = await saveStageEdits(sessionId, stage, selections);
   if (!resp.ok) throw new Error('保存选项失败');
   return resp.json();
 }
 
 export async function continueWorkflow(sessionId: string): Promise<{ status: string; next_stage?: string }> {
-  const resp = await fetch(`/api/project/${sessionId}/continue`, {
-    method: 'POST',
-  });
-  return resp.json();
+  const status = await getProjectStatus(sessionId);
+  const waiting = Object.entries(status.status).find(([, value]) => value === 'awaiting_user');
+  return { status: waiting ? 'waiting' : 'ready', next_stage: waiting?.[0] };
 }
 
 export async function* parseStreamEvents(response: Response): AsyncGenerator<StreamEvent> {

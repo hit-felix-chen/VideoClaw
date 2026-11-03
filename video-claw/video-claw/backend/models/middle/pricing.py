@@ -1,9 +1,8 @@
 """Documented prices, pre-call ranges, and the unknown-model list.
 
 Reuse: unit lookup on ``PriceBook``, Seedance rows that already cite the
-Volcengine price page, and the 1..6 image-call span previously inlined in
-``CostEstimate``. The session ``cost_estimate`` route is not this surface
-and is left as it was.
+Volcengine price page, and the 1..6 image-call span. This module is the
+only price source. ``MODEL_CONFIG`` does not carry price fields.
 
 A row is an API price only when it is verified, has a currency, and has an
 http(s) ``source_url``. ``MODEL_CONFIG`` amounts fail that test. ``quote``

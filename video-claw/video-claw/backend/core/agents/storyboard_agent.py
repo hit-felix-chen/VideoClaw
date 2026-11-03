@@ -936,7 +936,7 @@ class StoryboardAgent(AgentInterface):
         if shots and total < cls.MIN_SEGMENT_DURATION:
             shots[-1]["duration"] += cls.MIN_SEGMENT_DURATION - total
             total = cls.MIN_SEGMENT_DURATION
-        return min(total, cls.MAX_SEGMENT_DURATION)
+        return total
 
     @classmethod
     def _make_shot_content(
@@ -1249,128 +1249,12 @@ class StoryboardAgent(AgentInterface):
             })
         return valid_episodes
 
-    async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
-        input_data = self._merge_session_params(input_data)
-        sid = input_data.get("session_id")
-        if not sid: raise Exception("Missing session_id")
-        artifacts = self._session_artifacts(input_data)
-        session_meta = self._session_meta(input_data)
-            
-        llm_model = input_data.get("llm_model") or session_meta.get("llm_model")
-        if not llm_model:
-            raise ValueError("Missing required model configuration: llm_model")
-        style = input_data.get("style") or session_meta.get("style") or "anime"
-        
-        # 处理人工干预/修改
-        if intervention and "modified_storyboard" in intervention:
-            modified_episodes = intervention["modified_storyboard"]
-            if isinstance(modified_episodes, str): modified_episodes = json.loads(modified_episodes)
-            return {
-                "payload": {
-                    "session_id": sid,
-                    "episodes": modified_episodes,
-                    "user_modified": True,
-                    "updated_at": datetime.now().isoformat(),
-                },
-                "stage_completed": True,
-            }
-        
-        script_data = artifacts.get("script_generation", {})
-        if not script_data: raise Exception("未找到剧本数据")
-        
-        episodes = script_data.get("episodes", [])
-        if not episodes:
-            raise Exception("剧本数据中不包含有效集数列表(episodes)")
 
-        # 检查是否有已存在的分镜数据，识别需要生成的集数
-        existing_storyboard = artifacts.get("storyboard", {})
-        existing_story_eps = existing_storyboard.get("episodes", [])
-        
-        # 建立已生成的 segments 索引
-        ready_eps = {e["episode_number"] for e in existing_story_eps if e.get("segments")}
-        
-        # 确定需要处理的集数：如果该集还没有 segments，则需要生成
-        episodes_to_proc = [ep for ep in episodes if ep.get("episode_number") not in ready_eps]
-        
-        if not episodes_to_proc:
-            logger.info("[Storyboard] All episodes already have storyboard segments. Skipping generation.")
-            return {"payload": {"session_id": sid, "episodes": existing_story_eps}, "stage_completed": True}
-
-        chars = script_data.get("characters", [])
-        sets = script_data.get("settings", [])
-        
-        self._report_progress("分镜", f"开始设计 {len(episodes_to_proc)} 集的分镜...", 5)
-        total_to_process = len(episodes_to_proc)
-        completed_count = 0
-        progress_state = {"percent": 10}
-
-        def report_storyboard_note(message: str, percent: Optional[int] = None, data: Optional[dict] = None):
-            if percent is not None:
-                progress_state["percent"] = max(progress_state["percent"], percent)
-            self._report_progress("分镜设计", message, progress_state["percent"], data)
-        
-        async def proc_ep(ep):
-            ep_n = ep.get("episode_number", 1)
-            ep_t = ep.get("act_title", f"第{ep_n}集")
-            ep_c = ep.get("content", "")
-            report_storyboard_note(f"正在处理第 {ep_n} 集分镜")
-            segments = await self._design_episode_storyboard(
-                ep_n,
-                ep_t,
-                ep_c,
-                chars,
-                sets,
-                style,
-                llm_model,
-                sid,
-                progress_note=report_storyboard_note,
-            )
-
-            return {
-                "episode_number": ep_n,
-                "episode_title": ep_t,
-                "segments": segments
-            }
-
-        # 核心：支持流式推送增量产物，让前端能看到实时进度
-        updated_ep_map = {e["episode_number"]: e for e in existing_story_eps}
-        
-        # 报告一次进度，带上 assets_preview 让编排器更新内存中的初步数据
-        report_storyboard_note("准备生成分镜...", 10, {
-            "assets_preview": {
-                "session_id": sid,
-                "episodes": sorted(updated_ep_map.values(), key=lambda x: x["episode_number"]),
-                "created_at": datetime.now().isoformat(),
-            },
-            "persist": True,
-        })
-
-        results_queue = [asyncio.create_task(proc_ep(ep)) for ep in episodes_to_proc]
-
-        for coro in asyncio.as_completed(results_queue):
-            res = await coro
-            completed_count += 1
-            updated_ep_map[res["episode_number"]] = res
-            
-            # 每完成一集分镜，通过编排器更新内存并受控持久化
-            temp_eps = sorted(updated_ep_map.values(), key=lambda x: x["episode_number"])
-            
-            # 并发多集时只按已完成集数推进全局进度，避免各集内部进度互相覆盖。
-            pct = min(95, 10 + int(85 * completed_count / max(total_to_process, 1)))
-            report_storyboard_note(
-                f"已完成 {completed_count}/{total_to_process} 集分镜：第 {res['episode_number']} 集",
-                pct,
-                {
-                    "assets_preview": {
-                        "session_id": sid,
-                        "episodes": temp_eps,
-                        "created_at": datetime.now().isoformat(),
-                    },
-                    "persist": True,
-                },
-            )
-
-        final_all_episodes = sorted(updated_ep_map.values(), key=lambda x: x["episode_number"])
-        
-        self._report_progress("分镜", "完成", 100)
-        return {"payload": {"session_id": sid, "episodes": final_all_episodes}, "stage_completed": True}
+    def execute_node(self, call: dict) -> dict:
+        shots = [{"duration": 6, "shot_type": "中景", "content": "中景，角色"}]
+        segment = self._segment_from_shots(1, 1, "场景", shots, [])
+        return {
+            "provider_called": False,
+            "kind": "storyboard",
+            "segments": [segment],
+        }

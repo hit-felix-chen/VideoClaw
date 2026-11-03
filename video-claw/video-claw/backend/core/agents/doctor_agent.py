@@ -60,21 +60,6 @@ class DoctorAgent(AgentInterface):
         super().__init__(name="Doctor")
         self.llm_model = llm_model or Config.LLM_MODEL
 
-    async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
-        """Compatibility wrapper for the agent interface; doctor is normally called directly."""
-        input_data = input_data if isinstance(input_data, dict) else {}
-        return {
-            "payload": self.diagnose_error(
-                stage=str(input_data.get("stage", "")),
-                model=str(input_data.get("model", "")),
-                prompt=str(input_data.get("prompt", "")),
-                error=str(input_data.get("error", "")),
-                context=input_data.get("context") if isinstance(input_data.get("context"), dict) else None,
-            ),
-            "requires_intervention": False,
-            "stage_completed": True,
-        }
-
     @staticmethod
     def no_action(reason: str, reason_type: str = REASON_TYPE_UNKNOWN) -> Dict[str, Any]:
         return {

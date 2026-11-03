@@ -111,17 +111,6 @@ class FakeModelClients:
         monkeypatch.setattr("models.video_client.VideoClient", VideoClient)
 
 
-class WorkflowStubs:
-    """Stop stage execution from reaching an agent."""
-
-    @staticmethod
-    def silence_execution(monkeypatch) -> None:
-        async def fake_stream(**kwargs):
-            yield '{"type":"done","ok":true}\n'
-
-        monkeypatch.setattr("api.routers.workflow.stream_workflow_task", fake_stream)
-
-
 class ConfigState:
     """Snapshot Config class attributes around PUT /api/config."""
 

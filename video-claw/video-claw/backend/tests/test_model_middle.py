@@ -162,13 +162,9 @@ class TestRegistryBehavior:
         spec = ModelRegistry.get("wan2.7-i2v")
         assert spec.resolutions == ["720p", "1080p"]
         assert spec.currency is None
-        assert spec.prices
-        assert all(price.currency is None and price.verified is False for price in spec.prices)
-        assert PriceBook.quote("wan2.7-image").unit == PriceUnit.PER_IMAGE
-        assert PriceBook.quote("wan2.7-image").amount == 0.2
-        assert PriceBook.cost("wan2.7-i2v", quantity=10).total == 8.0
-        assert PriceBook.cost("wan2.7-i2v", quantity=10).currency is None
-        assert PriceBook.cost("wan2.7-i2v", quantity=10).verified is False
+        assert spec.prices == []
+        assert PriceBook.quote("wan2.7-image") is None
+        assert PriceBook.cost("wan2.7-i2v", quantity=10) is None
 
     def test_edge_tts_is_a_modality_without_a_price(self):
         spec = ModelRegistry.get("edge-tts")
@@ -318,7 +314,7 @@ class TestApiModelsMiddle:
         wan = next(item for item in body if item["id"] == "wan2.7-i2v")
         assert wan["capabilities"]["resolutions"] == ["720p", "1080p"]
         assert wan["currency"] is None
-        assert wan["pricing"][0]["verified"] is False
+        assert wan["pricing"] == []
 
         speech = client.get("/api/models", params={"model_type": "tts"})
         assert speech.status_code == 200

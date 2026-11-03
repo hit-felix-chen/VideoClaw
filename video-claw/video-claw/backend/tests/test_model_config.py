@@ -1,4 +1,4 @@
-"""Registry reads. Prices come from MODEL_CONFIG, not from a provider."""
+"""Registry reads. Prices come from pricing.py, not from MODEL_CONFIG."""
 
 from models.config_model import (
     MODEL_CONFIG,
@@ -27,31 +27,17 @@ class TestModelConfig:
             assert metadata["provider"]
             assert isinstance(metadata["type"], list) and metadata["type"]
             assert isinstance(metadata["concurrency"], int) and metadata["concurrency"] > 0
-            present = [key for key in PRICE_KEYS if key in metadata]
-            assert present, model_id
-            for key in present:
-                assert isinstance(metadata[key], (int, float))
-                assert metadata[key] >= 0
+            assert not any(key in metadata for key in PRICE_KEYS), model_id
 
-    def test_get_model_config_returns_the_registered_price(self):
-        registered = MODEL_CONFIG["models"]["wan2.7-image"]
+    def test_get_model_config_has_no_legacy_price_fields(self):
         loaded = get_model_config("wan2.7-image")
-        assert loaded["price_per_image"] == registered["price_per_image"] == 0.2
         assert loaded["provider"] == "dashscope"
-
-        video_id = next(
-            model_id
-            for model_id, metadata in MODEL_CONFIG["models"].items()
-            if "video" in (metadata.get("type") or []) and "price_per_second" in metadata
-        )
-        assert get_model_config(video_id)["price_per_second"] == MODEL_CONFIG["models"][video_id]["price_per_second"]
-
-        image_id = next(
-            model_id
-            for model_id, metadata in MODEL_CONFIG["models"].items()
-            if "price_per_image" in metadata
-        )
-        assert get_model_config(image_id)["price_per_image"] == MODEL_CONFIG["models"][image_id]["price_per_image"]
+        assert loaded["name"] == MODEL_CONFIG["models"]["wan2.7-image"]["name"]
+        assert not any(key in loaded for key in PRICE_KEYS)
+        for model_id, metadata in MODEL_CONFIG["models"].items():
+            loaded = get_model_config(model_id)
+            assert not any(key in loaded for key in PRICE_KEYS)
+            assert not any(key in metadata for key in PRICE_KEYS)
 
     def test_exact_id_is_not_replaced_by_a_shorter_neighbor(self):
         for model_id, metadata in MODEL_CONFIG["models"].items():
@@ -59,10 +45,11 @@ class TestModelConfig:
             assert loaded["name"] == metadata["name"]
             assert loaded["provider"] == metadata["provider"]
 
-    def test_loose_alias_still_exposes_a_real_price(self):
+    def test_loose_alias_resolves_without_a_config_price(self):
         loaded = get_model_config("models/deepseek-flash")
         assert loaded["id"] == "deepseek-flash"
         assert loaded["name"] == "deepseek-4.1-flash"
+        assert not any(key in loaded for key in PRICE_KEYS)
         alias = get_model_config("deepseek-4.1-flash")
         assert alias["id"] == "deepseek-flash"
 
