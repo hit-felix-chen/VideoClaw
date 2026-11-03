@@ -96,6 +96,21 @@ class VLM:
             lines.append("-" * 30)
             logger.info("\n%s", "\n".join(lines))
 
+        from models.middle.adapter import ProviderDispatch
+
+        delegated = ProviderDispatch.run(
+            self,
+            "vlm",
+            model,
+            {
+                "prompt": prompt,
+                "image_paths": image_paths,
+                "session_id": session_id,
+            },
+        )
+        if delegated is not None:
+            return delegated
+
         # Determine backend provider
         model_lower = model.lower()
         is_gemini = "gemini" in model_lower

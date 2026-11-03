@@ -17,6 +17,7 @@ import {
   deleteSession,
   saveSelections,
 } from '@/lib/workflowApi';
+import { DEFAULT_REFERENCE_VIDEO_MODEL } from '@/config/models';
 import TopBar, { STAGES, type ModelConfig } from './TopBar';
 import HomePage, { type ProjectParams } from './HomePage';
 import {
@@ -1191,7 +1192,7 @@ export default function WorkflowPanel() {
           video_generation_mode: s.video_generation_mode || 'first_frame',
           video_first_frame_model: restoredFirstFrameVideoModel,
           video_start_end_model: s.video_start_end_model || 'wan2.7-i2v',
-          video_reference_model: s.video_reference_model || 'wan2.7-r2v',
+          video_reference_model: s.video_reference_model || DEFAULT_REFERENCE_VIDEO_MODEL,
           video_model: s.video_model || '',
           expand_idea: s.expand_idea || false,
           enable_concurrency: s.enable_concurrency || false,
@@ -1260,7 +1261,7 @@ export default function WorkflowPanel() {
         video_generation_mode: projectParams.video_generation_mode || 'first_frame',
         video_first_frame_model: projectParams.video_first_frame_model || projectParams.video_model,
         video_start_end_model: projectParams.video_start_end_model || 'wan2.7-i2v',
-        video_reference_model: projectParams.video_reference_model || 'wan2.7-r2v',
+        video_reference_model: projectParams.video_reference_model || DEFAULT_REFERENCE_VIDEO_MODEL,
         video_model: projectParams.video_model,
         video_ratio: projectParams.video_ratio,
         video_resolution: projectParams.video_resolution || '720P',

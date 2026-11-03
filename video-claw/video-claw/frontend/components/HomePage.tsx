@@ -7,6 +7,7 @@ import { PROMPT_EXAMPLES } from '@/config/examples';
 import {
   STYLES,
   VIDEO_RATIOS,
+  DEFAULT_REFERENCE_VIDEO_MODEL,
   VIDEO_RESOLUTIONS,
   VIDEO_GENERATION_MODES,
   type ProviderGroup,
@@ -155,7 +156,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
         // Legacy config compatibility: older config.yaml only has models.video, so treat it as first-frame video.
         const firstFrameModel = models.video_first_frame || models.video;
         const startEndModel = models.video_start_end || 'wan2.7-i2v';
-        const referenceModel = models.video_reference || 'wan2.7-r2v';
+        const referenceModel = models.video_reference || DEFAULT_REFERENCE_VIDEO_MODEL;
         const videoMode = (generation.video_generation_mode || 'first_frame') as VideoGenerationMode;
         const selectedModel = videoMode === 'start_end_frame' ? startEndModel : videoMode === 'reference' ? referenceModel : firstFrameModel;
         if (!models.llm || !models.vlm || !models.image_t2i || !models.image_it2i || !selectedModel) {

@@ -110,6 +110,24 @@ class ImageClient:
         Returns:
             List of absolute file paths of the generated images.
         """
+        from models.middle.adapter import ProviderDispatch
+
+        delegated = ProviderDispatch.run(
+            self,
+            "image",
+            model,
+            {
+                "prompt": prompt,
+                "image_paths": image_paths,
+                "save_dir": save_dir,
+                "session_id": session_id,
+                "video_ratio": video_ratio,
+                "resolution": resolution,
+            },
+        )
+        if delegated is not None:
+            return delegated
+
         # Determine size from video_ratio and resolution
         size_map = {
             "16:9": {

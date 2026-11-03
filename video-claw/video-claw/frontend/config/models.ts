@@ -13,6 +13,9 @@ export interface ProviderGroup {
 
 export type VideoGenerationMode = 'first_frame' | 'start_end_frame' | 'reference';
 
+/** Default reference-to-video model. API id from the Volcengine Seedance 2.5 task sample. */
+export const DEFAULT_REFERENCE_VIDEO_MODEL = 'doubao-seedance-2-5-260628';
+
 export const VIDEO_GENERATION_MODES: Array<{ id: VideoGenerationMode; label: string; ability: string; modelKey: string }> = [
     { id: 'first_frame', label: '首帧生视频', ability: 'first_frame_i2v', modelKey: 'video_first_frame_model' },
     { id: 'start_end_frame', label: '首尾帧生视频', ability: 'start_end_frame_i2v', modelKey: 'video_start_end_model' },

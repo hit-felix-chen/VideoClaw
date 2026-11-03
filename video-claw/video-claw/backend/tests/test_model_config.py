@@ -1,7 +1,5 @@
 """Registry reads. Prices come from MODEL_CONFIG, not from a provider."""
 
-import pytest
-
 from models.config_model import (
     MODEL_CONFIG,
     get_max_concurrency,
@@ -9,7 +7,6 @@ from models.config_model import (
     get_models_by_type,
     parse_api_model,
 )
-
 
 PRICE_KEYS = (
     "price_per_1k_input_token",
@@ -77,14 +74,6 @@ class TestModelConfig:
         }
         assert not any(key in loaded for key in PRICE_KEYS)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG config_model.py:603 get_model_config treats '' as a substring of every id "
-            "because ('' in key) is True, so it returns deepseek-chat (price 0.002/0.008) "
-            "instead of the unknown stub. Repro: get_model_config('')."
-        ),
-    )
     def test_empty_model_id_is_unknown(self):
         loaded = get_model_config("")
         assert loaded["provider"] == "unknown"

@@ -121,6 +121,8 @@ class LLM:
             ])
             logger.info("\n%s", "\n".join(lines))
             
+        # Existing branches stay. OpenAICompatibleAdapter.complete is the
+        # chat.completions surface R2 will switch these clients onto.
         result = ""
         model_lower = model.lower()
         if model_lower.startswith("gemini"):

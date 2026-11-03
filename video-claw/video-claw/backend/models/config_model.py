@@ -550,16 +550,26 @@ def load_model_config() -> dict[str, Any]:
 
 
 def get_model_config(model: str) -> dict[str, Any]:
-    """Get metadata for one model, with a loose fallback for provider aliases."""
+    """Get metadata for one model.
+
+    Matching is exact after id normalization (trim, and a ``models/`` or
+    ``api/.../`` prefix). An empty id does not match another model.
+    """
+    from models.middle.ids import ModelIds
+
     models = MODEL_CONFIG.get("models", {})
-    if model in models:
-        return models[model]
+    found = ModelIds.exact(models, model)
+    if found is not None:
+        return found
+    alias = ModelIds.alias(model)
+    if alias and alias in models:
+        return models[alias]
+    if ModelIds.normalize(model):
+        from models.middle.registry import ModelRegistry
 
-    model_lower = model.lower()
-    for key, value in models.items():
-        if key in model_lower or model_lower in key:
-            return value
-
+        spec = ModelRegistry.get(model)
+        if spec is not None and spec.id not in models:
+            return spec.as_metadata()
     return {
         "name": model,
         "provider": "unknown",
@@ -848,6 +858,12 @@ def get_models_by_type(model_type: str) -> list[dict[str, Any]]:
     for model_id, metadata in MODEL_CONFIG.get("models", {}).items():
         if model_type in (metadata.get("type") or []):
             result.append({"id": model_id, **metadata})
+    seen = {item["id"] for item in result}
+    from models.middle.registry import ModelRegistry
+
+    for spec in ModelRegistry.extra_specs():
+        if model_type in spec.types and spec.id not in seen:
+            result.append({"id": spec.id, **spec.as_metadata()})
     return result
 
 
@@ -886,6 +902,18 @@ def model_records(media_type: Optional[str] = None) -> list[dict[str, Any]]:
         if resolved_media_type not in {"image", "video"}:
             continue
         records.append(_workflow_info(model_id, metadata, resolved_media_type))
+    seen = {record["model"] for record in records}
+    from models.middle.registry import ModelRegistry
+
+    for spec in ModelRegistry.extra_specs():
+        row = spec.workflow_row()
+        if row["media_type"] not in {"image", "video"}:
+            continue
+        if media_type and row["media_type"] != media_type:
+            continue
+        if row["model"] in seen:
+            continue
+        records.append(row)
     return records
 
 

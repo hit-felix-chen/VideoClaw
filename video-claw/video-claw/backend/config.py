@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -64,7 +66,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "video": "wan2.7-i2v",
         "video_first_frame": "wan2.7-i2v",
         "video_start_end": "wan2.7-i2v",
-        "video_reference": "wan2.7-r2v",
+        "video_reference": DEFAULT_REFERENCE_VIDEO_MODEL,
     },
     "generation": {
         "style": "realistic",
