@@ -16,10 +16,10 @@ from models.middle.providers import OpenAICompatibleAdapter
 from models.middle.registry import ModelRegistry
 
 SMOKE_MODELS = (
-    ("qwen3.6-max-preview", "dashscope"),
-    ("deepseek-chat", "deepseek"),
-    ("gemini-2.5-flash", "gemini"),
-    ("gpt-4o", "openai"),
+    ("qwen3.7-plus", "dashscope"),
+    ("deepseek-flash", "deepseek"),
+    ("gemini-3.8-flash", "gemini"),
+    ("gpt-6-luna", "openai"),
 )
 
 
@@ -54,12 +54,31 @@ class TestDefaultLlm:
     def test_default_config_llm_is_registered_as_an_llm(self):
         example = yaml.safe_load(Path("config.yaml.example").read_text(encoding="utf-8"))
         chosen = DEFAULT_CONFIG["models"]["llm"]
+        assert chosen == "deepseek-flash"
         assert example["models"]["llm"] == chosen
         assert Config.LLM_MODEL == chosen
         spec = ModelRegistry.get(chosen)
         assert spec is not None
+        assert spec.id == "deepseek-flash"
         assert "llm" in spec.types
         assert "llm" in spec.modalities
+        assert spec.context_window == 1_000_000
+        assert spec.max_output_tokens == 384_000
+        assert "image" in spec.input_modalities
+        assert spec.base_url == "https://api.deepseek.com"
+
+        vlm_id = DEFAULT_CONFIG["models"]["vlm"]
+        assert vlm_id == "qwen3.7-plus"
+        assert example["models"]["vlm"] == vlm_id
+        assert Config.VLM_MODEL == vlm_id
+        vlm = ModelRegistry.get(vlm_id)
+        assert vlm is not None
+        assert "vlm" in vlm.types
+        assert "vlm" in vlm.modalities
+        assert vlm.context_window == 1_000_000
+        assert vlm.max_output_tokens == 131072
+        assert "image" in vlm.input_modalities
+        assert "video" in vlm.input_modalities
 
     def test_cancellable_query_requires_an_explicit_model(self):
         with pytest.raises(ValueError, match="model"):
@@ -68,43 +87,51 @@ class TestDefaultLlm:
 
 class TestRegistryWebSearch:
     def test_dashscope_enable_search_is_model_specific(self):
-        preview = ModelRegistry.get("qwen3.6-max-preview")
-        listed = ModelRegistry.get("qwen3.7-max")
-        assert preview.web_search["supported"] is False
-        assert preview.web_search["verified"] is True
-        assert preview.web_search["transport"] is None
-        assert preview.web_search["source"].endswith("/web-search")
-        assert "enable_search" in preview.web_search["note"]
-        assert preview.input_modalities == ["text"]
+        assert ModelRegistry.get("qwen3.6-max-preview") is None
+        listed = ModelRegistry.get("qwen3.7-plus")
         assert listed.web_search == {
             "supported": True,
             "verified": True,
             "transport": "extra_body.enable_search",
-            "source": preview.web_search["source"],
+            "source": listed.web_search["source"],
         }
+        assert listed.web_search["source"].startswith("https://")
         assert listed.capability_dict()["web_search"]["supported"] is True
+        plain = ModelRegistry.get("deepseek-v4-pro")
+        assert plain.web_search["supported"] is False
+        assert plain.input_modalities == ["text"]
 
     def test_other_providers_do_not_invent_web_search(self):
-        gemini = ModelRegistry.get("gemini-2.5-flash")
-        deepseek = ModelRegistry.get("deepseek-chat")
-        gpt = ModelRegistry.get("gpt-4o")
+        gemini = ModelRegistry.get("gemini-3.8-flash")
+        deepseek = ModelRegistry.get("deepseek-flash")
+        gpt = ModelRegistry.get("gpt-6-luna")
         assert gemini.web_search["supported"] is False
-        assert "web_search" in gemini.web_search["source"]
         assert deepseek.web_search["supported"] is False
         assert gpt.web_search["supported"] is False
         assert gemini.input_modalities == ["text", "image"]
         assert gpt.input_modalities == ["text", "image"]
-        assert deepseek.input_modalities == ["text"]
-        assert ModelRegistry.get("kimi-k2.6").input_modalities == ["text", "image"]
-        assert ModelRegistry.get("kimi-k2.6").web_search["supported"] is False
+        assert deepseek.input_modalities == ["text", "image"]
+        kimi = ModelRegistry.get("kimi-k2.6")
+        assert kimi.provider == "moonshot"
+        assert kimi.input_modalities == ["text"]
+        assert kimi.web_search["supported"] is False
+        assert kimi.deprecated_on == "2026-12-31"
+        for spec in ModelRegistry.all():
+            if spec.web_search and spec.web_search.get("supported"):
+                assert spec.provider == "dashscope"
+                assert spec.web_search["transport"] == "extra_body.enable_search"
 
     def test_dashscope_chat_url_is_compatible_mode_and_native_config_stays(self):
         assert Config.DASHSCOPE_BASE_URL.rstrip("/").endswith("/api/v1")
         base_url, _key = OpenAICompatibleAdapter.endpoint("dashscope")
         assert base_url == Config.DASHSCOPE_BASE_URL.rstrip("/")[: -len("/api/v1")] + "/compatible-mode/v1"
         assert OpenAICompatibleAdapter.endpoint("openai")[0] == Config.OPENAI_BASE_URL
-        assert OpenAICompatibleAdapter.endpoint("gemini")[0] == Config.GOOGLE_GEMINI_BASE_URL
+        assert OpenAICompatibleAdapter.endpoint("gemini")[0] == (
+            Config.GOOGLE_GEMINI_BASE_URL.rstrip("/") + "/openai"
+        )
         assert OpenAICompatibleAdapter.endpoint("deepseek")[0] == Config.DEEPSEEK_BASE_URL
+        assert Config.DEEPSEEK_BASE_URL.rstrip("/") == "https://api.deepseek.com"
+        assert OpenAICompatibleAdapter.endpoint("moonshot")[0] == Config.MOONSHOT_BASE_URL
         native = "https://dashscope-intl.aliyuncs.com/api/v1"
         assert OpenAICompatibleAdapter.chat_base_url("dashscope", native) == (
             "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
@@ -138,15 +165,15 @@ class TestOpenAICompatLLM:
                 self.chat = type("Chat", (), {"completions": Completions()})()
 
         monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
-        text = OpenAICompatLLM().query("明天天气", model="qwen3.7-max", web_search=True)
+        text = OpenAICompatLLM().query("明天天气", model="qwen3.7-plus", web_search=True)
         assert text == "天气不错"
-        assert created["kwargs"]["model"] == "qwen3.7-max"
+        assert created["kwargs"]["model"] == "qwen3.7-plus"
         assert created["kwargs"]["extra_body"] == {"enable_search": True}
         assert created["init"]["base_url"].endswith("/compatible-mode/v1")
         assert created["kwargs"]["messages"][1]["content"][0]["text"] == "明天天气"
 
         created.clear()
-        plain = OpenAICompatLLM().query("写一场戏", model="qwen3.6-max-preview", web_search=False)
+        plain = OpenAICompatLLM().query("写一场戏", model="deepseek-flash", web_search=False)
         assert plain == "天气不错"
         assert "extra_body" not in created["kwargs"]
 
@@ -155,7 +182,7 @@ class TestOpenAICompatLLM:
             raise AssertionError("chat.completions should not be called")
 
         monkeypatch.setattr(OpenAICompatibleAdapter, "complete", staticmethod(refuse))
-        for model in ("qwen3.6-max-preview", "gemini-2.5-flash", "deepseek-chat", "gpt-4o", "kimi-k2.6"):
+        for model in ("deepseek-flash", "gemini-3.8-flash", "gpt-6-luna", "kimi-k2.6", "deepseek-v4-pro"):
             with pytest.raises(UnsupportedParam) as caught:
                 OpenAICompatLLM().query("hi", model=model, web_search=True)
             assert caught.value.name == "web_search"
@@ -164,7 +191,7 @@ class TestOpenAICompatLLM:
             OpenAICompatLLM().query(
                 "hi",
                 image_urls=["https://example.com/a.png"],
-                model="qwen3.6-max-preview",
+                model="deepseek-v4-pro",
             )
         assert images.value.name == "image_urls"
 
@@ -175,7 +202,7 @@ class TestOpenAICompatLLM:
         monkeypatch.setattr("models.vlm_dashscope.QwenVLClient.chat", refuse_vlm)
         calls = _patch_complete(monkeypatch, "kimi text")
         assert OpenAICompatLLM().query("看图", model="kimi-k2.6") == "kimi text"
-        assert calls[0]["provider"] == "dashscope"
+        assert calls[0]["provider"] == "moonshot"
         assert calls[0]["model"] == "kimi-k2.6"
 
         for model in ("qwen3.6-plus", "qwen3.6-flash", "custom-vl-max"):
@@ -188,7 +215,7 @@ class TestOpenAICompatLLM:
         assert OpenAICompatLLM().query(
             "Ａ",
             image_urls=["https://example.com/a.png"],
-            model="gpt-4o",
+            model="gpt-6-luna",
         ) == "seen"
         content = calls[0]["messages"][1]["content"]
         assert content[0] == {"type": "text", "text": "A"}
@@ -196,7 +223,7 @@ class TestOpenAICompatLLM:
         assert calls[0]["provider"] == "openai"
 
         calls.clear()
-        OpenAICompatLLM().query("frame", image_urls=["https://example.com/b.png"], model="gemini-2.5-flash")
+        OpenAICompatLLM().query("frame", image_urls=["https://example.com/b.png"], model="gemini-3.8-flash")
         assert calls[0]["provider"] == "gemini"
         assert calls[0]["messages"][1]["content"][1]["type"] == "image_url"
 
@@ -212,7 +239,7 @@ class TestOpenAICompatLLM:
         original = OpenAICompatibleAdapter.complete
         OpenAICompatibleAdapter.complete = staticmethod(fake_complete)
         try:
-            assert OpenAICompatLLM().query("p", model="deepseek-chat") == "line\nnext"
+            assert OpenAICompatLLM().query("p", model="deepseek-flash") == "line\nnext"
             assert calls_holder["extra"] == {}
         finally:
             OpenAICompatibleAdapter.complete = original

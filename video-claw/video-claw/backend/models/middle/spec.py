@@ -15,6 +15,11 @@ class PriceUnit:
     PER_IMAGE = "per_image"
     PER_SECOND = "per_second"
     PER_MILLION_TOKENS = "per_million_tokens"
+    PER_MILLION_INPUT_TOKENS = "per_million_input_tokens"
+    PER_MILLION_OUTPUT_TOKENS = "per_million_output_tokens"
+    PER_MILLION_CACHED_INPUT_TOKENS = "per_million_cached_input_tokens"
+    PER_MILLION_CACHE_WRITE_TOKENS = "per_million_cache_write_tokens"
+    PER_10K_CHARACTERS = "per_10k_characters"
 
 
 class CapabilityText:
@@ -98,6 +103,17 @@ class PriceQuote:
     list_price: bool = False
     effective_date: Optional[str] = None
     source_url: str = ""
+    cache: Optional[str] = None
+    tier: Optional[str] = None
+    region: Optional[str] = None
+    input_min: Optional[int] = None
+    input_min_exclusive: bool = False
+    input_max: Optional[int] = None
+    input_max_exclusive: bool = False
+    effective_from: Optional[str] = None
+    effective_until: Optional[str] = None
+    fetched: str = ""
+    meter: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -174,6 +190,13 @@ class ModelSpec:
     todos: list = field(default_factory=list)
     # LLM only. ``supported`` is false when the capability was checked and is absent.
     web_search: Optional[dict] = None
+    context_window: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    base_url: str = ""
+    openai_compatible: Optional[bool] = None
+    deprecated: str = ""
+    deprecated_on: Optional[str] = None
+    price_schedule: str = ""
 
     def __post_init__(self) -> None:
         self.modalities = CapabilityText.modalities(self.types)
@@ -231,6 +254,20 @@ class ModelSpec:
             payload["todo"] = list(self.todos)
         if self.web_search is not None:
             payload["web_search"] = dict(self.web_search)
+        if self.context_window:
+            payload["context_window"] = self.context_window
+        if self.max_output_tokens:
+            payload["max_output_tokens"] = self.max_output_tokens
+        if self.base_url:
+            payload["base_url"] = self.base_url
+        if self.openai_compatible is not None:
+            payload["openai_compatible"] = self.openai_compatible
+        if self.deprecated:
+            payload["deprecated"] = self.deprecated
+        if self.deprecated_on:
+            payload["deprecated_on"] = self.deprecated_on
+        if self.price_schedule:
+            payload["price_schedule"] = self.price_schedule
         return payload
 
     def as_metadata(self) -> dict:

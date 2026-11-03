@@ -219,14 +219,25 @@ class OpenAICompatibleAdapter(ProviderAdapter):
     """
 
     provider = "openai-compatible"
-    providers = frozenset({"openai", "deepseek", "gemini", "dashscope", "ark"})
+    providers = frozenset({"openai", "deepseek", "gemini", "dashscope", "ark", "moonshot"})
     modalities = frozenset({"llm"})
+
+    def matches(self, spec, modality: Optional[str] = None) -> bool:
+        if spec is not None and spec.openai_compatible is False:
+            return False
+        return super().matches(spec, modality)
 
     @staticmethod
     def chat_base_url(provider: str, base_url: str) -> str:
-        if provider != "dashscope" or not base_url:
-            return base_url or ""
-        url = base_url.rstrip("/")
+        url = (base_url or "").rstrip("/")
+        if provider == "gemini":
+            if url.endswith("/openai"):
+                return url
+            if url.endswith("/v1beta"):
+                return url + "/openai"
+            return url
+        if provider != "dashscope" or not url:
+            return url
         if url.endswith("/compatible-mode/v1"):
             return url
         if url.endswith("/api/v1"):
@@ -243,6 +254,7 @@ class OpenAICompatibleAdapter(ProviderAdapter):
             "gemini": (Config.GOOGLE_GEMINI_BASE_URL, Config.GEMINI_API_KEY),
             "dashscope": (Config.DASHSCOPE_BASE_URL, Config.DASHSCOPE_API_KEY),
             "ark": (Config.ARK_BASE_URL, Config.ARK_API_KEY),
+            "moonshot": (Config.MOONSHOT_BASE_URL, Config.MOONSHOT_API_KEY),
         }
         base_url, api_key = endpoints.get(provider, ("", ""))
         return OpenAICompatibleAdapter.chat_base_url(provider, base_url or ""), api_key or ""

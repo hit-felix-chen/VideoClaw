@@ -18,7 +18,11 @@ api_providers:
     enable_proxy: false
   deepseek:
     api_key: ''
-    base_url: https://api.deepseek.com/v1
+    base_url: https://api.deepseek.com
+    enable_proxy: false
+  moonshot:
+    api_key: ''
+    base_url: https://api.moonshot.cn/v1
     enable_proxy: false
   dashscope:
     api_key: ''
@@ -33,8 +37,8 @@ api_providers:
     api_key: ''
     enable_proxy: false
 models:
-  llm: qwen3.6-max-preview
-  vlm: qwen3.5-plus
+  llm: deepseek-flash
+  vlm: qwen3.7-plus
   image_it2i: doubao-seedream-5-0-260128
   image_t2i: doubao-seedream-5-0-260128
   video: wan2.7-i2v

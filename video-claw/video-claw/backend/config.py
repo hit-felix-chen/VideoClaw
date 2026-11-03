@@ -39,7 +39,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
         "deepseek": {
             "api_key": "",
-            "base_url": "https://api.deepseek.com/v1",
+            "base_url": "https://api.deepseek.com",
+            "enable_proxy": False,
+        },
+        "moonshot": {
+            "api_key": "",
+            "base_url": "https://api.moonshot.cn/v1",
             "enable_proxy": False,
         },
         "dashscope": {
@@ -59,8 +64,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         },
     },
     "models": {
-        "llm": "qwen3.6-max-preview",
-        "vlm": "qwen3.5-plus",
+        "llm": "deepseek-flash",
+        "vlm": "qwen3.7-plus",
         "image_it2i": "doubao-seedream-5-0-260128",
         "image_t2i": "doubao-seedream-5-0-260128",
         "video": "wan2.7-i2v",
@@ -222,6 +227,9 @@ class Config:
     DEEPSEEK_API_KEY = _get(CONFIG, "api_providers.deepseek.api_key")
     DEEPSEEK_BASE_URL = _get(CONFIG, "api_providers.deepseek.base_url")
     DEEPSEEK_ENABLE_PROXY = _get(CONFIG, "api_providers.deepseek.enable_proxy")
+    MOONSHOT_API_KEY = _get(CONFIG, "api_providers.moonshot.api_key")
+    MOONSHOT_BASE_URL = _get(CONFIG, "api_providers.moonshot.base_url")
+    MOONSHOT_ENABLE_PROXY = _get(CONFIG, "api_providers.moonshot.enable_proxy")
     DASHSCOPE_API_KEY = _get(CONFIG, "api_providers.dashscope.api_key")
     DASHSCOPE_BASE_URL = _get(CONFIG, "api_providers.dashscope.base_url")
     DASHSCOPE_ENABLE_PROXY = _get(CONFIG, "api_providers.dashscope.enable_proxy")
@@ -294,6 +302,9 @@ class Config:
         cls.DEEPSEEK_API_KEY = _get(clean, "api_providers.deepseek.api_key")
         cls.DEEPSEEK_BASE_URL = _get(clean, "api_providers.deepseek.base_url")
         cls.DEEPSEEK_ENABLE_PROXY = _get(clean, "api_providers.deepseek.enable_proxy")
+        cls.MOONSHOT_API_KEY = _get(clean, "api_providers.moonshot.api_key")
+        cls.MOONSHOT_BASE_URL = _get(clean, "api_providers.moonshot.base_url")
+        cls.MOONSHOT_ENABLE_PROXY = _get(clean, "api_providers.moonshot.enable_proxy")
         cls.DASHSCOPE_API_KEY = _get(clean, "api_providers.dashscope.api_key")
         cls.DASHSCOPE_BASE_URL = _get(clean, "api_providers.dashscope.base_url")
         cls.DASHSCOPE_ENABLE_PROXY = _get(clean, "api_providers.dashscope.enable_proxy")

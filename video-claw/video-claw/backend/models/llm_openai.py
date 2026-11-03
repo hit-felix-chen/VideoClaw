@@ -24,7 +24,7 @@ _ENABLE_SEARCH = "extra_body.enable_search"
 class OpenAICompatLLM:
     """Chat completion with the historical ``query`` argument order."""
 
-    DEFAULT_MODEL = "qwen3.6-max-preview"
+    DEFAULT_MODEL = "deepseek-flash"
 
     def query(
         self,

@@ -77,7 +77,7 @@ if __name__ == "__main__":
     from config import Config
 
     # 支持的 VLM 模型列表
-    MODELS = ["qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "qwen3.5-plus", "kimi-k2.6"]
+    MODELS = ["qwen3.7-plus", "qwen3.8-flash", "qwen3.8-omni-flash"]
 
     print("=== Qwen VL (DashScope) 多模态可用性测试 ===")
     api_key = Config.DASHSCOPE_API_KEY

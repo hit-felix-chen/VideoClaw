@@ -34,14 +34,19 @@ _CONFIG_PRICE_FIELDS = (
     ("price_per_second", PriceUnit.PER_SECOND),
 )
 
-# Alibaba documents enable_search on compatible-mode chat.completions, passed
-# as extra_body in the Python OpenAI SDK. The China (Beijing) chat list names
-# qwen3.7-max. It does not name qwen3.6-max-preview, qwen3-max, deepseek-v3.2,
-# or kimi-k2.6. Qwen3.6/3.5 multimodal ids must use the multimodal API, which
-# this LLM client does not call.
+# Official chat rows set web_search in ``official.py``. A DashScope row that
+# is still only in MODEL_CONFIG is not on the 2026-11-03 chat list, so
+# enable_search stays off. Bailian is the only vendor that documents
+# extra_body.enable_search on compatible-mode chat.completions.
 # https://www.alibabacloud.com/help/en/model-studio/web-search
 _DASHSCOPE_WEB_SEARCH_DOC = "https://www.alibabacloud.com/help/en/model-studio/web-search"
-_DASHSCOPE_CHAT_WEB_SEARCH = frozenset({"qwen3.7-max"})
+_DASHSCOPE_CHAT_WEB_SEARCH = frozenset()
+_CONFIG_DEPRECATED = {
+    "seedance-1-0-pro": (
+        "being retired; official id doubao-seedance-1-0-pro-250528 "
+        "(Volcengine pricing page fetched 2026-11-03, no shutdown date published)"
+    ),
+}
 _LLM_IMAGE_PROVIDERS = frozenset({"openai", "gemini"})
 
 
@@ -92,6 +97,8 @@ class SpecCatalog:
             prices=SpecCatalog._config_prices(model_id, metadata),
             max_reference_images=SpecCatalog._optional_int(caps.get("max_reference_images")),
             max_reference_images_verified=bool(caps.get("max_reference_images_verified", False)),
+            deprecated=_CONFIG_DEPRECATED.get(model_id, ""),
+            openai_compatible=False if (metadata.get("provider") == "kling") else None,
         )
 
     @staticmethod
@@ -237,6 +244,7 @@ class SpecCatalog:
                     source=PRICE_DOC,
                     source_url=PRICE_DOC,
                     list_price=True,
+                    fetched="2026-11-03",
                 )
             )
         abilities = [

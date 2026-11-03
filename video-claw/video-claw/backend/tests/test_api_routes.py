@@ -53,7 +53,7 @@ class TestWorkflowRoutes:
         body = created.json()
         session_id = body["session_id"]
         assert session_id.isdigit()
-        assert body["params"]["llm_model"] == "deepseek-chat"
+        assert body["params"]["llm_model"] == "deepseek-flash"
         assert body["params"]["episodes"] == 1
         assert (isolated_runtime["session_dir"] / f"{session_id}.json").is_file()
 
@@ -367,7 +367,7 @@ class TestSandboxRoutes:
         FakeModelClients.llm(monkeypatch, text="文字结果")
         llm = client.post(
             "/api/sandbox/llm",
-            json={"model": "deepseek-chat", "prompt": "你好", "web_search": False},
+            json={"model": "deepseek-flash", "prompt": "你好", "web_search": False},
         )
         assert llm.status_code == 200
         assert llm.json()["success"] is True
@@ -384,7 +384,7 @@ class TestSandboxRoutes:
         FakeModelClients.vlm(monkeypatch, text="看见了")
         vlm = client.post(
             "/api/sandbox/vlm",
-            json={"model": "qwen3.5-plus", "prompt": "描述", "images": ["/tmp/a.png"]},
+            json={"model": "qwen3.7-plus", "prompt": "描述", "images": ["/tmp/a.png"]},
         )
         assert vlm.status_code == 200
         assert vlm.json()["result"] == "看见了"

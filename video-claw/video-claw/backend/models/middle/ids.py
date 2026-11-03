@@ -15,6 +15,8 @@ DEFAULT_REFERENCE_VIDEO_MODEL = "doubao-seedance-2-5-260628"
 _PREFIXES = {"api", "models"}
 _ALIASES = {
     "doubao-seedance-2.5": DEFAULT_REFERENCE_VIDEO_MODEL,
+    # Display name only. No vendor publishes this string as an API id.
+    "deepseek-4.1-flash": "deepseek-flash",
 }
 
 

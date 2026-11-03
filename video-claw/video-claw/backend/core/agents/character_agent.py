@@ -327,7 +327,7 @@ class CharacterDesignerAgent(AgentInterface):
             rewrite_result if 'rewrite_result' in locals() else None,
         )
 
-    def _evaluate_with_vlm(self, image_path: str, description: str, asset_type: str, vlm_model: str = "qwen3.5-plus") -> dict:
+    def _evaluate_with_vlm(self, image_path: str, description: str, asset_type: str, vlm_model: str = "qwen3.7-plus") -> dict:
         """使用 VLM 评估生成的图片"""
         try:
             from models.vlm_client import VLM
@@ -376,7 +376,7 @@ class CharacterDesignerAgent(AgentInterface):
             return {"score": 5, "issues": [str(e)], "is_acceptable": True}
 
     def _select_best_with_vlm(self, image_paths: List[str], name: str, description: str,
-                               asset_type: str, species: str = "", vlm_model: str = "qwen3.5-plus") -> tuple:
+                               asset_type: str, species: str = "", vlm_model: str = "qwen3.7-plus") -> tuple:
         """使用 VLM 从多个版本中选择最好的一张"""
         from models.vlm_client import VLM
         import re

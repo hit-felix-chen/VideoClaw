@@ -7,8 +7,9 @@ class TestApiModels:
         assert models.status_code == 200
         body = models.json()["models"]
         ids = {item["id"] for item in body}
-        assert "deepseek-chat" in ids
-        sample = next(item for item in body if item["id"] == "deepseek-chat")
+        assert "deepseek-flash" in ids
+        assert "deepseek-chat" not in ids
+        sample = next(item for item in body if item["id"] == "deepseek-flash")
         assert sample["provider"] == "deepseek"
         assert sample["model_type"] == "llm"
         assert sample["label"]

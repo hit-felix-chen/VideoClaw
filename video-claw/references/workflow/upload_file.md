@@ -38,7 +38,7 @@ curl -X POST "http://localhost:8000/api/project/start" \
     "idea": "如果用户有补充说明，填在这里；如果没有可留空",
     "style": "anime",
     "episodes": 4,
-    "llm_model": "qwen3.5-plus"
+    "llm_model": "deepseek-flash"
   }'
 ```
 

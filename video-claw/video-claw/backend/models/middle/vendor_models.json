@@ -1,0 +1,2705 @@
+[
+ {
+  "id": "deepseek-flash",
+  "vendor": "deepseek",
+  "type": "llm",
+  "base_url": "https://api.deepseek.com",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "USD",
+    "price": 0.003,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "USD",
+    "price": 0.006,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M input tokens (cache miss)",
+    "currency": "USD",
+    "price": 0.15,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens (cache miss)",
+    "currency": "USD",
+    "price": 0.3,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 0.6,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 1.2,
+    "tier": "peak"
+   }
+  ],
+  "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+  "notes": "= DeepSeek-V4.1-Flash-1017 (updated 2026-10-17; V4.1 Flash released 2026-09-10). Context 1M, max output 384K, thinking on by default. Vision via OpenAI image_url (base64/URL) or Files API; <=600 images/request, 32 MiB/image, 48 MiB body. Peak = 01-04 & 06-10 UTC Mon-Fri. Retired aliases deepseek-v4-flash, deepseek-v4-flash-vision-exp are routed here and billed at Flash price. No enable_search on chat; separate Search API POST /v1/tools/search and Fetch API /v1/tools/fetch at USD 0.75/1k requests each.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "aliases": [
+   "deepseek-v4-flash (retired, routed)",
+   "deepseek-v4-flash-vision-exp (retired, routed)"
+  ],
+  "context": 1000000,
+  "max_output": 384000,
+  "extra_sources": [
+   "https://api-docs.deepseek.com/guides/vision",
+   "https://api-docs.deepseek.com/updates",
+   "https://api-docs.deepseek.com/guides/search"
+  ]
+ },
+ {
+  "id": "deepseek-v4-pro",
+  "vendor": "deepseek",
+  "type": "llm",
+  "base_url": "https://api.deepseek.com",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "USD",
+    "price": 0.022,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "USD",
+    "price": 0.044,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M input tokens (cache miss)",
+    "currency": "USD",
+    "price": 0.66,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens (cache miss)",
+    "currency": "USD",
+    "price": 1.32,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 1.98,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 3.96,
+    "tier": "peak"
+   }
+  ],
+  "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+  "notes": "V4-Pro-0813; no vision; continued after 2026-09-14.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "deepseek-v4.1-flash",
+  "vendor": "alibaba-bailian",
+  "type": "llm",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": true,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1,
+    "tier": "off-peak cn-beijing"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 2,
+    "tier": "peak cn-beijing"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 4,
+    "tier": "off-peak cn-beijing"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 8,
+    "tier": "peak cn-beijing"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.1,
+    "tier": "off-peak cn-beijing"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.2,
+    "tier": "peak cn-beijing"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1.094,
+    "tier": "off-peak singapore"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 2.188,
+    "tier": "peak singapore"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 4.375,
+    "tier": "off-peak singapore"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 8.75,
+    "tier": "peak singapore"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Snapshot deepseek-v4.1-flash-1017. Text+image input. Max input 1,000,000; max output 393,216. Off-peak 22:00-08:00 UTC+8. enable_search via extra_body supported (listed for deepseek-v4.1-flash-1017). Search fee extra (turbo 3 / max 4 / agent 4 CNY per 1k calls).",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "aliases": [
+   "deepseek-v4.1-flash-1017"
+  ],
+  "context": 1000000,
+  "max_output": 393216,
+  "extra_sources": [
+   "https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope",
+   "https://help.aliyun.com/zh/model-studio/web-search"
+  ]
+ },
+ {
+  "id": "qwen3.8-flash",
+  "vendor": "alibaba-bailian",
+  "type": "vlm",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": true,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 2.7
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.1
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Image+video input. Max input 991,808; max output 131,072. Beijing price.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 991808,
+  "max_output": 131072,
+  "extra_sources": [
+   "https://help.aliyun.com/zh/model-studio/web-search"
+  ]
+ },
+ {
+  "id": "qwen3.8-max",
+  "vendor": "alibaba-bailian",
+  "type": "llm",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": null,
+  "web_search": true,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 12
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 36
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 1.5
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Snapshot qwen3.8-max-0902. Image-input support not verified this pass. Beijing price.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "aliases": [
+   "qwen3.8-max-0902"
+  ],
+  "extra_sources": [
+   "https://help.aliyun.com/zh/model-studio/web-search"
+  ]
+ },
+ {
+  "id": "qwen3.7-plus",
+  "vendor": "alibaba-bailian",
+  "type": "vlm",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": true,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 2,
+    "tier": "input<=256K"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 8,
+    "tier": "input<=256K"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.4,
+    "tier": "input<=256K"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 6,
+    "tier": "256K<input<=1M"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 24,
+    "tier": "256K<input<=1M"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Latest 'plus' tier. Context 1M; max output 131,072. Image+video input. Beijing price.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1000000,
+  "max_output": 131072,
+  "extra_sources": [
+   "https://help.aliyun.com/zh/model-studio/web-search"
+  ]
+ },
+ {
+  "id": "qwen3.8-omni-flash",
+  "vendor": "alibaba-bailian",
+  "type": "vlm",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": true,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 2.7
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Text/image/audio/video input. Beijing price.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "qwen-image-3.0-pro",
+  "vendor": "alibaba-bailian",
+  "type": "image",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image (input, 1K/2K)",
+    "currency": "CNY",
+    "price": 0.02,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "image (output 1K)",
+    "currency": "CNY",
+    "price": 0.25,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "image (output 2K)",
+    "currency": "CNY",
+    "price": 0.5,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "image (input)",
+    "currency": "CNY",
+    "price": 0.022483,
+    "tier": "singapore"
+   },
+   {
+    "unit": "image (output 1K)",
+    "currency": "CNY",
+    "price": 0.299768,
+    "tier": "singapore"
+   },
+   {
+    "unit": "image (output 2K)",
+    "currency": "CNY",
+    "price": 0.562065,
+    "tier": "singapore"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Image+text input. DashScope image API, not chat.completions.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "wan2.7-image-pro",
+  "vendor": "alibaba-bailian",
+  "type": "image",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image",
+    "currency": "CNY",
+    "price": 0.5,
+    "tier": "cn-beijing"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "qwen-audio-3.1-tts-flash",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1.5,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 12,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1.677,
+    "tier": "singapore"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 13.636,
+    "tier": "singapore"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "qwen-audio-3.1-tts-plus",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 1.4,
+    "tier": "cn-beijing"
+   },
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 2.19,
+    "tier": "singapore"
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "qwen-audio-3.0-tts-plus",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 1.4
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "qwen-audio-3.0-tts-flash",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 1.0
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "cosyvoice-v3.5-plus",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 1.5
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "cosyvoice-v3.5-flash",
+  "vendor": "alibaba-bailian",
+  "type": "tts",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "10k characters",
+    "currency": "CNY",
+    "price": 0.8
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.1-t2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (480P)",
+    "currency": "CNY",
+    "price": 0.45
+   },
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.2
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Durations for t2v/i2v not separately verified. DashScope async video API.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.0-t2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.6
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Older gen; prefer 1.1.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.1-i2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (480P)",
+    "currency": "CNY",
+    "price": 0.45
+   },
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.2
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Durations for t2v/i2v not separately verified. DashScope async video API.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.0-i2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.6
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Older gen; prefer 1.1.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.1-r2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (480P)",
+    "currency": "CNY",
+    "price": 0.45
+   },
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.2
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "R2V: 1-9 reference images, 3-15 s (default 5), 480/720/1080P. DashScope async video API.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "happyhorse-1.0-r2v",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.6
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Older gen; prefer 1.1.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "wan3.0-video",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (480P)",
+    "currency": "CNY",
+    "price": 0.3
+   },
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.6
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.2
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Bills input-video seconds + output seconds. Time-limited 30% off (list prices shown). Up to 10 reference images; duration 2-30 s or -1; 480/720/1080P.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "max_ref_images": 10,
+  "durations": "2-30s or -1",
+  "resolutions": [
+   "480P",
+   "720P",
+   "1080P"
+  ]
+ },
+ {
+  "id": "wan3.0-video-prime",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (480P)",
+    "currency": "CNY",
+    "price": 0.45
+   },
+   {
+    "unit": "second (720P)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P)",
+    "currency": "CNY",
+    "price": 1.8
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Same limits as wan3.0-video.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kling/kling-v3-video-generation",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P, silent)",
+    "currency": "CNY",
+    "price": 0.6
+   },
+   {
+    "unit": "second (1080P, silent)",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "second (4K, silent)",
+    "currency": "CNY",
+    "price": 3.0
+   },
+   {
+    "unit": "second (720P, audio)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P, audio)",
+    "currency": "CNY",
+    "price": 1.2
+   },
+   {
+    "unit": "second (4K, audio)",
+    "currency": "CNY",
+    "price": 3.0
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Kling via Bailian (cn-beijing), output-only billing.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kling/kling-v3-turbo-video-generation",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P, audio)",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "second (1080P, audio)",
+    "currency": "CNY",
+    "price": 1.0
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Kling via Bailian.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kling/kling-v3-omni-video-generation",
+  "vendor": "alibaba-bailian",
+  "type": "video",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P, silent, no ref video)",
+    "currency": "CNY",
+    "price": 0.6
+   },
+   {
+    "unit": "second (1080P, silent, no ref video)",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "second (720P, silent, ref video / or audio no ref)",
+    "currency": "CNY",
+    "price": 0.9
+   },
+   {
+    "unit": "second (1080P, silent ref video / or audio no ref)",
+    "currency": "CNY",
+    "price": 1.2
+   },
+   {
+    "unit": "second (4K, any)",
+    "currency": "CNY",
+    "price": 3.0
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "Kling via Bailian.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kling/kling-v3-image-generation",
+  "vendor": "alibaba-bailian",
+  "type": "image",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image (1K/2K)",
+    "currency": "CNY",
+    "price": 0.2
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kling/kling-v3-omni-image-generation",
+  "vendor": "alibaba-bailian",
+  "type": "image",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 (legacy https://dashscope.aliyuncs.com/compatible-mode/v1 still works)",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image (1K/2K)",
+    "currency": "CNY",
+    "price": 0.2
+   },
+   {
+    "unit": "image (4K)",
+    "currency": "CNY",
+    "price": 0.4
+   }
+  ],
+  "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "doubao-seed-2-1-pro-260915",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 6,
+    "tier": "[0,1024k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 1.2,
+    "tier": "[0,1024k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 30,
+    "tier": "[0,1024k]"
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "1024k context, 256k max output, multimodal. Cache storage 0.017 CNY/1M/hour. Flex/batch ~50%. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ],
+  "context": 1024000,
+  "max_output": 256000
+ },
+ {
+  "id": "doubao-seed-evolving",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 6
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 1.2
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 30
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "Same price as 2.1-pro. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "doubao-seed-2-1-lite-260915",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.16
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 2.7
+   },
+   {
+    "unit": "1M audio input tokens",
+    "currency": "CNY",
+    "price": 12
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "1024k context, multimodal. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ],
+  "context": 1024000
+ },
+ {
+  "id": "doubao-seed-2-1-turbo-260628",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 3
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.6
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 15
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "256k context. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ],
+  "context": 256000
+ },
+ {
+  "id": "doubao-seed-2-0-lite-260428",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.6,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.12,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 3.6,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.9,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.18,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 5.4,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1.8,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.36,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 10.8,
+    "tier": "(128k,256k]"
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "LTS, 256k. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "doubao-seed-2-0-mini-260428",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.2,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.04,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 2.0,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.4,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.08,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 4.0,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.8,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.16,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 8.0,
+    "tier": "(128k,256k]"
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "LTS, 256k. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "doubao-seed-2-0-pro-260215",
+  "vendor": "volcengine-ark",
+  "type": "vlm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 3.2,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.64,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 16,
+    "tier": "[0,32k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 4.8,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.96,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 24,
+    "tier": "(32k,128k]"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 9.6,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 1.92,
+    "tier": "(128k,256k]"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 48,
+    "tier": "(128k,256k]"
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "BEING RETIRED. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "glm-5-3-flash-260828",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 0.8
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.23
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 2.8
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": " Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "glm-5-2-260617",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 8
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 2
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 28
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": " Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "kimi-k3-1-pro-261024",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 13
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 1.3
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 68
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": " Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "deepseek-v4-1-flash-261017",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 1,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.02,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 4,
+    "tier": "off-peak"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 2,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.04,
+    "tier": "peak"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 8,
+    "tier": "peak"
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "Peak = Beijing Mon-Fri 09-12 & 14-18. Also -260910 snapshot. Economy variant deepseek-v4-1-flash-economy-261017: 0.8/0.016/3.2 off-peak, 1.6/0.032/6.4 peak. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "deepseek-v4-pro-ga-260813",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 9
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.3
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 27
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": " Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "deepseek-v4-flash-ga-260731",
+  "vendor": "volcengine-ark",
+  "type": "llm",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 3
+   },
+   {
+    "unit": "1M input tokens (cache hit)",
+    "currency": "CNY",
+    "price": 0.1
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 9
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "Older Flash GA. Web search: 联网内容插件 is Responses-API only (4 CNY/1k), not on Chat API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/model-list"
+  ]
+ },
+ {
+  "id": "doubao-seedance-2-5-260628",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens (480p/720p, no video input)",
+    "currency": "CNY",
+    "price": 70
+   },
+   {
+    "unit": "1M tokens (480p/720p, with video input)",
+    "currency": "CNY",
+    "price": 42
+   },
+   {
+    "unit": "1M tokens (1080p, no video input)",
+    "currency": "CNY",
+    "price": 77
+   },
+   {
+    "unit": "1M tokens (1080p, with video input)",
+    "currency": "CNY",
+    "price": 46
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "4-30 s or -1; 480p/720p 8-bit, 1080p 10-bit; ratios 21:9,16:9,4:3,1:1,3:4,9:16,adaptive; 24 fps; up to 50 refs (30 images+10 videos+10 audios); draft mode. Example 5 s 16:9 no video input: 3.36/7.56/18.71 CNY (480/720/1080p). Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ],
+  "max_ref_images": 30,
+  "durations": "4-30s or -1",
+  "resolutions": [
+   "480p",
+   "720p",
+   "1080p"
+  ]
+ },
+ {
+  "id": "doubao-seedance-2-0-260128",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens (480/720p, no video in)",
+    "currency": "CNY",
+    "price": 46
+   },
+   {
+    "unit": "1M tokens (480/720p, video in)",
+    "currency": "CNY",
+    "price": 28
+   },
+   {
+    "unit": "1M tokens (1080p, no video in)",
+    "currency": "CNY",
+    "price": 51
+   },
+   {
+    "unit": "1M tokens (1080p, video in)",
+    "currency": "CNY",
+    "price": 31
+   },
+   {
+    "unit": "1M tokens (4k, no video in)",
+    "currency": "CNY",
+    "price": 26
+   },
+   {
+    "unit": "1M tokens (4k, video in)",
+    "currency": "CNY",
+    "price": 16
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "4-15 s; up to 15 refs (9 images+3 videos+3 audios). Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ],
+  "max_ref_images": 9,
+  "durations": "4-15s",
+  "resolutions": [
+   "480p",
+   "720p",
+   "1080p",
+   "4k"
+  ]
+ },
+ {
+  "id": "doubao-seedance-2-0-fast-260128",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens (no video in)",
+    "currency": "CNY",
+    "price": 37
+   },
+   {
+    "unit": "1M tokens (video in)",
+    "currency": "CNY",
+    "price": 22
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "480/720p only. Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ]
+ },
+ {
+  "id": "doubao-seedance-2-0-mini-260615",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens (no video in)",
+    "currency": "CNY",
+    "price": 23
+   },
+   {
+    "unit": "1M tokens (video in)",
+    "currency": "CNY",
+    "price": 14
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "480/720p only. Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ]
+ },
+ {
+  "id": "doubao-seedance-1-0-pro-250528",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens",
+    "currency": "CNY",
+    "price": 15
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "2-12 s. BEING RETIRED. Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ]
+ },
+ {
+  "id": "doubao-seedance-1-0-pro-fast-251015",
+  "vendor": "volcengine-ark",
+  "type": "video",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M tokens",
+    "currency": "CNY",
+    "price": 4.2
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": " Endpoint POST /api/v3/contents/generations/tasks. Online only. Tokens ≈ (input video s + output s) × W × H × fps / 1024; minimum token usage when input includes video.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5"
+  ]
+ },
+ {
+  "id": "doubao-seedream-5-0-pro-260628",
+  "vendor": "volcengine-ark",
+  "type": "image",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "input image (first free, then each)",
+    "currency": "CNY",
+    "price": 0.02
+   },
+   {
+    "unit": "output image <=2.61MP",
+    "currency": "CNY",
+    "price": 0.3
+   },
+   {
+    "unit": "output image >2.61MP",
+    "currency": "CNY",
+    "price": 0.6
+   },
+   {
+    "unit": "layer split <=2.61MP / >2.61MP",
+    "currency": "CNY",
+    "price": [
+     0.15,
+     0.3
+    ]
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "doubao-seedream-5-0-flash-260915",
+  "vendor": "volcengine-ark",
+  "type": "image",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image",
+    "currency": "CNY",
+    "price": 0.12
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "doubao-seedream-5-0-260128",
+  "vendor": "volcengine-ark",
+  "type": "image",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image",
+    "currency": "CNY",
+    "price": 0.22
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "lite",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "doubao-seedream-4-5-251128",
+  "vendor": "volcengine-ark",
+  "type": "image",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image",
+    "currency": "CNY",
+    "price": 0.25
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "BEING RETIRED",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "doubao-seedream-4-0-250828",
+  "vendor": "volcengine-ark",
+  "type": "image",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "image",
+    "currency": "CNY",
+    "price": 0.2
+   }
+  ],
+  "source_url": "https://ark.volcengine.com/region:cn-beijing/docs/model-pricing",
+  "notes": "BEING RETIRED",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gpt-6-astra",
+  "vendor": "openai",
+  "type": "vlm",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 10
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 50
+   },
+   {
+    "unit": "1M cached input tokens",
+    "currency": "USD",
+    "price": 1
+   },
+   {
+    "unit": "1M cache write (30m)",
+    "currency": "USD",
+    "price": 12.5
+   },
+   {
+    "unit": "1M cache write (12h)",
+    "currency": "USD",
+    "price": 25
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "1.05M context, 128K max output, text+image input, on chat/completions. Batch/Flex -50%, Fast 2x; >272K input prompts 2x input / 1.5x output; regional processing +10%. Web search tool $10/1k calls is Responses-API; chat-compat web search not verified. ",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1050000,
+  "max_output": 128000,
+  "extra_sources": [
+   "https://developers.openai.com/api/docs/models"
+  ]
+ },
+ {
+  "id": "gpt-6.1-sol",
+  "vendor": "openai",
+  "type": "vlm",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 2
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 10
+   },
+   {
+    "unit": "1M cached input tokens",
+    "currency": "USD",
+    "price": 0.1
+   },
+   {
+    "unit": "1M cache write (30m)",
+    "currency": "USD",
+    "price": 2.5
+   },
+   {
+    "unit": "1M cache write (12h)",
+    "currency": "USD",
+    "price": 5
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "1.05M context, 128K max output, text+image input, on chat/completions. Batch/Flex -50%, Fast 2x; >272K input prompts 2x input / 1.5x output; regional processing +10%. Web search tool $10/1k calls is Responses-API; chat-compat web search not verified. ",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1050000,
+  "max_output": 128000,
+  "extra_sources": [
+   "https://developers.openai.com/api/docs/models"
+  ]
+ },
+ {
+  "id": "gpt-6.1-terra",
+  "vendor": "openai",
+  "type": "vlm",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 1
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 5
+   },
+   {
+    "unit": "1M cached input tokens",
+    "currency": "USD",
+    "price": 0.05
+   },
+   {
+    "unit": "1M cache write (30m)",
+    "currency": "USD",
+    "price": 1.25
+   },
+   {
+    "unit": "1M cache write (12h)",
+    "currency": "USD",
+    "price": 2.5
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "1.05M context, 128K max output, text+image input, on chat/completions. Batch/Flex -50%, Fast 2x; >272K input prompts 2x input / 1.5x output; regional processing +10%. Web search tool $10/1k calls is Responses-API; chat-compat web search not verified. Model page: tool calling requires the Responses API.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1050000,
+  "max_output": 128000,
+  "extra_sources": [
+   "https://developers.openai.com/api/docs/models"
+  ]
+ },
+ {
+  "id": "gpt-6-luna",
+  "vendor": "openai",
+  "type": "vlm",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 0.1
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 0.5
+   },
+   {
+    "unit": "1M cached input tokens",
+    "currency": "USD",
+    "price": 0.01
+   },
+   {
+    "unit": "1M cache write (30m)",
+    "currency": "USD",
+    "price": 0.125
+   },
+   {
+    "unit": "1M cache write (12h)",
+    "currency": "USD",
+    "price": 0.25
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "1.05M context, 128K max output, text+image input, on chat/completions. Batch/Flex -50%, Fast 2x; >272K input prompts 2x input / 1.5x output; regional processing +10%. Web search tool $10/1k calls is Responses-API; chat-compat web search not verified. ",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1050000,
+  "max_output": 128000,
+  "extra_sources": [
+   "https://developers.openai.com/api/docs/models"
+  ]
+ },
+ {
+  "id": "gpt-image-2.5-sunburst",
+  "vendor": "openai",
+  "type": "image",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M image input tokens",
+    "currency": "USD",
+    "price": 8
+   },
+   {
+    "unit": "1M image output tokens",
+    "currency": "USD",
+    "price": 30
+   },
+   {
+    "unit": "1M cached image input tokens",
+    "currency": "USD",
+    "price": 2
+   },
+   {
+    "unit": "1M text input tokens",
+    "currency": "USD",
+    "price": 5
+   },
+   {
+    "unit": "1M cached text input tokens",
+    "currency": "USD",
+    "price": 1.25
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "Images API.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gpt-image-2.5-flare",
+  "vendor": "openai",
+  "type": "image",
+  "base_url": "https://api.openai.com/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M image input tokens",
+    "currency": "USD",
+    "price": 8
+   },
+   {
+    "unit": "1M image output tokens",
+    "currency": "USD",
+    "price": 30
+   },
+   {
+    "unit": "1M cached image input tokens",
+    "currency": "USD",
+    "price": 2
+   },
+   {
+    "unit": "1M text input tokens",
+    "currency": "USD",
+    "price": 5
+   },
+   {
+    "unit": "1M cached text input tokens",
+    "currency": "USD",
+    "price": 1.25
+   }
+  ],
+  "source_url": "https://developers.openai.com/api/docs/pricing",
+  "notes": "Images API.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.8-flash",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 0.75,
+    "effective": "through 2026-12-31"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 1.5,
+    "effective": "from 2027-01-01"
+   },
+   {
+    "unit": "1M output tokens (incl. thinking)",
+    "currency": "USD",
+    "price": 3.75,
+    "effective": "through 2026-12-31"
+   },
+   {
+    "unit": "1M output tokens (incl. thinking)",
+    "currency": "USD",
+    "price": 7.5,
+    "effective": "from 2027-01-01"
+   },
+   {
+    "unit": "1M cached tokens",
+    "currency": "USD",
+    "price": 0.075,
+    "effective": "through 2026-12-31"
+   },
+   {
+    "unit": "1M cached tokens",
+    "currency": "USD",
+    "price": 0.15,
+    "effective": "from 2027-01-01"
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Input limit 1,048,576; output limit 65,536. PRICE DOUBLES 2027-01-01. Batch 50%. Google Search grounding $14/1k after 5k free/month (native API); OpenAI-compat extra_body documents google_search tools only for images (gemini-3-pro-image-preview) — chat-compat search NOT documented.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1048576,
+  "max_output": 65536,
+  "extra_sources": [
+   "https://ai.google.dev/gemini-api/docs/openai",
+   "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash"
+  ]
+ },
+ {
+  "id": "gemini-4-argon",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 2.0,
+    "effective": "through 2026-11-30"
+   },
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 4.0,
+    "effective": "from 2026-12-01"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 10.0,
+    "effective": "through 2026-11-30"
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 20.0,
+    "effective": "from 2026-12-01"
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Flagship; paid tier only; price DOUBLES 2026-12-01. Context/output limits not captured.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.5-flash-lite",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 0.3
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 2.5
+   },
+   {
+    "unit": "1M cached tokens",
+    "currency": "USD",
+    "price": 0.03
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3-flash-preview",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens (text/image/video)",
+    "currency": "USD",
+    "price": 0.5
+   },
+   {
+    "unit": "1M input tokens (audio)",
+    "currency": "USD",
+    "price": 1.0
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "USD",
+    "price": 3.0
+   },
+   {
+    "unit": "1M cached tokens",
+    "currency": "USD",
+    "price": 0.05
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Legacy; deprecated (announced 2025-12-17), no shutdown date announced; replacement gemini-3.6-flash.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://ai.google.dev/gemini-api/docs/deprecations"
+  ]
+ },
+ {
+  "id": "gemini-3.8-flash-tts",
+  "vendor": "google-gemini",
+  "type": "tts",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": false,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M text input tokens",
+    "currency": "USD",
+    "price": 0.5,
+    "effective": "through 2026-12-31"
+   },
+   {
+    "unit": "1M text input tokens",
+    "currency": "USD",
+    "price": 1.0,
+    "effective": "from 2027-01-01"
+   },
+   {
+    "unit": "1M audio output tokens",
+    "currency": "USD",
+    "price": 9.0,
+    "effective": "through 2026-12-31"
+   },
+   {
+    "unit": "1M audio output tokens",
+    "currency": "USD",
+    "price": 18.0,
+    "effective": "from 2027-01-01"
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Compat-endpoint TTS support not verified.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-omni-1.1-flash",
+  "vendor": "google-gemini",
+  "type": "video",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "USD",
+    "price": 1.5
+   },
+   {
+    "unit": "1M output tokens (text)",
+    "currency": "USD",
+    "price": 9.0
+   },
+   {
+    "unit": "1M output tokens (video)",
+    "currency": "USD",
+    "price": 17.5
+   }
+  ],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Video gen; 5,792 tokens/s of 720p ≈ $0.10/s. NOT supported on OpenAI-compat /v1/videos — native GenAI SDK (Interactions API) only. Veo 3.1 preview ids shut down 2026-10-22.",
+  "verified": true,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.6-flash",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.1-pro-preview",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.1-flash-lite",
+  "vendor": "google-gemini",
+  "type": "vlm",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.1-flash-image",
+  "vendor": "google-gemini",
+  "type": "image",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.1-flash-lite-image",
+  "vendor": "google-gemini",
+  "type": "image",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3-pro-image",
+  "vendor": "google-gemini",
+  "type": "image",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-nano-banana-2.1",
+  "vendor": "google-gemini",
+  "type": "image",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": true,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "gemini-3.8-flash-lite-tts",
+  "vendor": "google-gemini",
+  "type": "tts",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "image_input": false,
+  "web_search": false,
+  "prices": [],
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "notes": "Listed on pricing page; prices NOT CAPTURED in this pass (published — read source).",
+  "verified": false,
+  "fetched": "2026-11-03"
+ },
+ {
+  "id": "kimi-k3.1-pro",
+  "vendor": "moonshot-kimi",
+  "type": "vlm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 13
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 68
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 1.3
+   },
+   {
+    "unit": "1M cache write (5min)",
+    "currency": "CNY",
+    "price": 13
+   },
+   {
+    "unit": "1M cache write (1h)",
+    "currency": "CNY",
+    "price": 26
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": "Always thinking; reasoning_effort low/high/max (default max). max_completion_tokens default 131072, max 1048576. Vision via image_url base64 or ms://file-id only (public URLs NOT supported). Batch 60%. Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1048576,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kimi-k3.1-pro-highspeed",
+  "vendor": "moonshot-kimi",
+  "type": "vlm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 26
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 136
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 1.3
+   },
+   {
+    "unit": "1M cache write (5min)",
+    "currency": "CNY",
+    "price": 26
+   },
+   {
+    "unit": "1M cache write (1h)",
+    "currency": "CNY",
+    "price": 52
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": " Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1048576,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kimi-k3",
+  "vendor": "moonshot-kimi",
+  "type": "vlm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 20
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 100
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 2.0
+   },
+   {
+    "unit": "1M cache write (5min)",
+    "currency": "CNY",
+    "price": 20
+   },
+   {
+    "unit": "1M cache write (1h)",
+    "currency": "CNY",
+    "price": 40
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": " Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 1048576,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kimi-k2.7-code",
+  "vendor": "moonshot-kimi",
+  "type": "llm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 6.5
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 27
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 1.3
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": "K2 series: 262,144 context; closed to new users from 2026-10-31, all K2 to go offline end of Dec 2026. Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 262144,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kimi-k2.7-code-highspeed",
+  "vendor": "moonshot-kimi",
+  "type": "llm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 13
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 54
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 2.6
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": "K2 series: 262,144 context; closed to new users from 2026-10-31, all K2 to go offline end of Dec 2026. Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 262144,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kimi-k2.6",
+  "vendor": "moonshot-kimi",
+  "type": "llm",
+  "base_url": "https://api.moonshot.cn/v1",
+  "image_input": null,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "1M input tokens",
+    "currency": "CNY",
+    "price": 6.5
+   },
+   {
+    "unit": "1M output tokens",
+    "currency": "CNY",
+    "price": 27
+   },
+   {
+    "unit": "1M cache-hit tokens",
+    "currency": "CNY",
+    "price": 1.1
+   }
+  ],
+  "source_url": "https://platform.kimi.com/docs/pricing/chat",
+  "notes": "K2 series: 262,144 context; closed to new users from 2026-10-31, all K2 to go offline end of Dec 2026. Web search: separate REST tools (/v1/tools/search 0.01 CNY/call, search_pro 0.015, fetch 0.01); built-in web search tool 'being updated, not recommended for production'.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "context": 262144,
+  "extra_sources": [
+   "https://platform.kimi.com/docs/guide/kimi-k3-1-pro-quickstart",
+   "https://platform.kimi.com/docs/pricing/websearch"
+  ]
+ },
+ {
+  "id": "kling-v3",
+  "vendor": "kling",
+  "type": "video",
+  "base_url": "https://api-singapore.klingai.com (global) / https://api-beijing.klingai.com (CN) — native REST, JWT AK/SK, not OpenAI-compatible",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P, no audio)",
+    "currency": "USD",
+    "price": 0.084
+   },
+   {
+    "unit": "second (720P, audio)",
+    "currency": "USD",
+    "price": 0.126
+   },
+   {
+    "unit": "second (1080P, no audio)",
+    "currency": "USD",
+    "price": 0.112
+   },
+   {
+    "unit": "second (1080P, audio)",
+    "currency": "USD",
+    "price": 0.168
+   },
+   {
+    "unit": "second (4K)",
+    "currency": "USD",
+    "price": 0.42
+   }
+  ],
+  "source_url": "https://kling.ai/dev/pricing",
+  "notes": "List price, 1 unit = $0.14 (prepaid packs cheaper). 3-15 s, 16:9/9:16/1:1 per kling.ai/llms.txt (dated 2026-05-29). Display name 'Kling 3.0'; api id from kling.ai/llms.txt.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://kling.ai/llms.txt"
+  ]
+ },
+ {
+  "id": "kling-v3-omni",
+  "vendor": "kling",
+  "type": "video",
+  "base_url": "https://api-singapore.klingai.com (global) / https://api-beijing.klingai.com (CN) — native REST, JWT AK/SK, not OpenAI-compatible",
+  "image_input": true,
+  "web_search": false,
+  "prices": [
+   {
+    "unit": "second (720P, no video in, no audio)",
+    "currency": "USD",
+    "price": 0.084
+   },
+   {
+    "unit": "second (720P, no video in, audio)",
+    "currency": "USD",
+    "price": 0.112
+   },
+   {
+    "unit": "second (720P, video in, no audio)",
+    "currency": "USD",
+    "price": 0.126
+   },
+   {
+    "unit": "second (1080P, ...)",
+    "currency": "USD",
+    "price": [
+     0.112,
+     0.14,
+     0.168
+    ]
+   },
+   {
+    "unit": "second (4K)",
+    "currency": "USD",
+    "price": 0.42
+   }
+  ],
+  "source_url": "https://kling.ai/dev/pricing",
+  "notes": "Max 15 s.",
+  "verified": true,
+  "fetched": "2026-11-03",
+  "extra_sources": [
+   "https://kling.ai/llms.txt"
+  ]
+ }
+]

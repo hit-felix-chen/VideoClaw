@@ -106,6 +106,15 @@ const GROUPS: Array<{ title: string; description: string; fields: Field[] }> = [
     ],
   },
   {
+    title: 'Moonshot',
+    description: 'Kimi 官方接口（OpenAI 兼容）。',
+    fields: [
+      { path: 'api_providers.moonshot.api_key', label: 'api_key API 密钥', type: 'password' },
+      { path: 'api_providers.moonshot.base_url', label: 'base_url 接口地址' },
+      { path: 'api_providers.moonshot.enable_proxy', label: 'enable_proxy 启用代理', type: 'boolean' },
+    ],
+  },
+  {
     title: 'Kling',
     description: '可灵视频生成接口配置。',
     fields: [

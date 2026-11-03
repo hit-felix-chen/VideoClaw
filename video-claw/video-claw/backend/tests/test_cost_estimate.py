@@ -37,16 +37,16 @@ def test_known_prices():
 
 
 def test_missing_price_is_unknown_not_zero():
-    # deepseek-chat is registered, but it has no price_per_image.
-    assert "price_per_image" not in MODEL_CONFIG["models"]["deepseek-chat"]
+    # deepseek-flash is registered for tokens, but CostEstimate bills price_per_image.
+    assert "deepseek-flash" not in MODEL_CONFIG["models"]
     # wan2.7-image is registered, but it has no price_per_second.
     assert "price_per_second" not in MODEL_CONFIG["models"][IMAGE]
 
     missing_image = CostEstimate.estimate(
-        {"image": "deepseek-chat", "video": VIDEO_FLASH},
+        {"image": "deepseek-flash", "video": VIDEO_FLASH},
         [{"episode_number": 1, "asset_count": 2, "duration_seconds": 10}],
     )
-    assert missing_image["unknown_models"] == ["deepseek-chat"]
+    assert missing_image["unknown_models"] == ["deepseek-flash"]
     assert missing_image["by_episode"][0]["image"] is None
     assert missing_image["by_episode"][0]["video"] == 6.0
     assert missing_image["by_episode"][0]["total"] is None
