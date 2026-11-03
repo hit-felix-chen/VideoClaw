@@ -69,6 +69,7 @@ TABLE_COLUMNS = {
         "attributes_json",
         "created_at",
         "updated_at",
+        "covered_json",
     ],
     "look_version": [
         "id",
@@ -81,6 +82,7 @@ TABLE_COLUMNS = {
         "attributes_json",
         "reason",
         "created_at",
+        "covered_json",
     ],
     "blob": ["hash", "mime", "kind", "ext", "size", "refcount", "created_at"],
     "image": [
@@ -165,8 +167,8 @@ class TestMigration:
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA user_version").fetchone()[0] == Schema.VERSION
-        assert Schema.current(conn) == 1
-        assert Schema.applied_versions(conn) == [1]
+        assert Schema.current(conn) == Schema.VERSION
+        assert Schema.applied_versions(conn) == [version for version, _name, _sql in Schema.MIGRATIONS]
         names = {
             row[0]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -182,9 +184,9 @@ class TestMigration:
         conn.close()
         reopened = Database.connect(data)
         try:
-            assert Schema.migrate(reopened) == 1
-            assert Schema.migrate(reopened) == 1
-            assert _count(reopened, "schema_version") == 1
+            assert Schema.migrate(reopened) == Schema.VERSION
+            assert Schema.migrate(reopened) == Schema.VERSION
+            assert _count(reopened, "schema_version") == len(Schema.MIGRATIONS)
             assert ProjectStore.open(reopened, project["id"])["name"] == "Keep me"
             assert ProjectStore.open(reopened, project["id"])["budget_cap"] == 12.5
         finally:
@@ -211,14 +213,14 @@ class TestMigration:
 
         conn = Database.connect(data)
         try:
-            assert Schema.current(conn) == 1
-            assert _count(conn, "schema_version") == 1
+            assert Schema.current(conn) == Schema.VERSION
+            assert _count(conn, "schema_version") == len(Schema.MIGRATIONS)
             opened = ProjectStore.open(conn, "projlegacy")
             assert opened["name"] == "Already there"
             assert opened["budget_cap"] is None
             assert opened["spent"] is None
-            assert Schema.migrate(conn) == 1
-            assert _count(conn, "schema_version") == 1
+            assert Schema.migrate(conn) == Schema.VERSION
+            assert _count(conn, "schema_version") == len(Schema.MIGRATIONS)
             assert ProjectStore.open(conn, "projlegacy")["name"] == "Already there"
         finally:
             conn.close()
@@ -229,7 +231,7 @@ class TestMigration:
         (data / "videoclaw.db").write_bytes(b"")
         conn = Database.connect(data)
         try:
-            assert Schema.current(conn) == 1
+            assert Schema.current(conn) == Schema.VERSION
             assert ProjectStore.list(conn) == []
             assert _count(conn, "project") == 0
         finally:

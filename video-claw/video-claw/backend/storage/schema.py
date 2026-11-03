@@ -11,6 +11,12 @@ R6 persists the in-memory graph with :class:`storage.GraphStore` (the
 from that JSON. R5 owns asset-library behavior on top of ``asset``, ``look``,
 ``look_version``, ``image``, ``look_selection``, and ``segment_ref``. R3 owns
 ledger behavior on top of ``ledger``.
+
+``look.covered_json`` / ``look_version.covered_json`` (v2) record which
+description, prompt, and attribute keys the look owns. The other look columns
+store the resolved values: owned fields stay, uncovered fields are copies
+that follow the parent. Null ``covered_json`` is a v1 row and is read as
+"non-null fields are owned".
 """
 
 from __future__ import annotations
@@ -229,10 +235,22 @@ def _strip(statement: str) -> str:
     return statement.strip()
 
 
+def _add_column(table: str, column: str, definition: str):
+    """Append a column once. Retry-safe when the version row was not recorded."""
+
+    def apply(conn: sqlite3.Connection) -> None:
+        found = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column in found:
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    return apply
+
+
 class Schema:
     """Apply and inspect ``schema_version``."""
 
-    VERSION = 1
+    VERSION = 2
     ASSET_KINDS = ASSET_KINDS
     ASSET_SCOPES = ASSET_SCOPES
     IMAGE_SOURCES = IMAGE_SOURCES
@@ -252,8 +270,16 @@ class Schema:
         "ledger",
         "blob",
     )
-    MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
+    MIGRATIONS: tuple[tuple[int, str, tuple], ...] = (
         (1, "initial_project_store", tuple(_strip(item) for item in _V1)),
+        (
+            2,
+            "look_covered_mask",
+            (
+                _add_column("look", "covered_json", "TEXT"),
+                _add_column("look_version", "covered_json", "TEXT"),
+            ),
+        ),
     )
 
     @staticmethod
@@ -288,7 +314,10 @@ class Schema:
                 if version in applied:
                     continue
                 for statement in statements:
-                    conn.execute(statement)
+                    if callable(statement):
+                        statement(conn)
+                    else:
+                        conn.execute(statement)
                 conn.execute(
                     "INSERT INTO schema_version (version, name, applied_at) VALUES (?, ?, ?)",
                     (version, name, utc_now()),

@@ -1,10 +1,15 @@
-"""CRUD stubs for the Asset → Look → Image chain.
+"""Asset → Look → Image records, with inheritable looks.
 
-R5 owns inheritance, cycle detection, follow-parent updates, and rollback.
-These methods insert and read the rows that chain needs. Creating or
-updating a look also writes a ``look_version`` row so version history has
-a place to grow. Image rows are immutable records: a new picture is a new
-row, and :meth:`LookStore.select_image` records which one is current.
+Creating or updating a look appends a ``look_version``. Image rows are the
+versions: each picture is its own row (source, model, prompt, cost), never a
+``{asset_id}*`` filename glob. :meth:`LookStore.select_image` records which
+image is current.
+
+Resolved description, prompt, and attributes live on the look row.
+``covered_json`` says which of those the look owns. Uncovered fields copy
+the parent and are rewritten, with a ``follow`` version, when the parent
+changes. Rollback restores a historical snapshot and then refreshes
+descendants. Setting ``parent_look_id`` rejects cycles and does not cap depth.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ from storage.database import (
     AssetNotFoundError,
     ImageNotFoundError,
     LookNotFoundError,
+    LookVersionNotFoundError,
     ProjectNotFoundError,
     StorageError,
     dump_json,
@@ -29,7 +35,21 @@ from storage.database import (
     transaction,
     utc_now,
 )
+from storage.inheritance import (
+    assert_parent_acyclic,
+    covered_from_create,
+    descendant_ids,
+    dump_covered,
+    load_covered,
+    materialize,
+    normalize_covered,
+    own_from_stored,
+    resolve_parent,
+    visual_of,
+    visuals_equal,
+)
 from storage.schema import Schema
+from storage.staleness import mark_look_outputs_stale, mark_segments_stale
 
 _UNSET = object()
 
@@ -76,7 +96,13 @@ def _asset_record(row: sqlite3.Row) -> dict[str, Any]:
 
 def _look_record(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     record = row_dict(row)
-    record["attributes"] = _load_attributes(record.pop("attributes_json"))
+    record["attributes"] = _load_attributes(record.pop("attributes_json")) or {}
+    record["covered"] = load_covered(
+        record.pop("covered_json"),
+        description=record["description"],
+        prompt=record["prompt"],
+        attributes=record["attributes"],
+    )
     version = conn.execute(
         "SELECT COALESCE(MAX(version), 0) FROM look_version WHERE look_id = ?",
         (record["id"],),
@@ -234,12 +260,104 @@ class AssetStore:
         return AssetStore.get(conn, asset_id)
 
     @staticmethod
+    def promote(conn: sqlite3.Connection, asset_id: str) -> dict[str, Any]:
+        """Move a project asset to the global library. Looks and images stay."""
+        current = AssetStore.get(conn, asset_id)
+        if current["scope"] == "global":
+            raise StorageError("asset is already global")
+        with transaction(conn):
+            conn.execute(
+                """
+                UPDATE asset
+                SET scope = 'global', project_id = NULL, episode_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (utc_now(), current["id"]),
+            )
+        return AssetStore.get(conn, current["id"])
+
+    @staticmethod
+    def search(
+        conn: sqlite3.Connection,
+        *,
+        tags: list[str],
+        project_id: str | None = None,
+        include_global: bool = True,
+        kind: str | None = None,
+        scope: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Assets that carry every requested tag. Tag match is exact."""
+        if not isinstance(tags, list) or not tags:
+            raise StorageError("tags must be a non-empty list of strings")
+        wanted: list[str] = []
+        for tag in tags:
+            if not isinstance(tag, str) or not tag.strip() or "\x00" in tag:
+                raise StorageError("tag must be a non-empty string")
+            wanted.append(tag.strip())
+        if kind is not None and kind not in Schema.ASSET_KINDS:
+            raise StorageError(f"asset kind must be one of {Schema.ASSET_KINDS}")
+        if scope is not None and scope not in Schema.ASSET_SCOPES:
+            raise StorageError(f"asset scope must be one of {Schema.ASSET_SCOPES}")
+        clauses: list[str] = []
+        values: list[Any] = []
+        if project_id is not None:
+            project_id = require_id(project_id, "project_id")
+            if include_global:
+                clauses.append("(project_id = ? OR scope = 'global')")
+                values.append(project_id)
+            else:
+                clauses.append("project_id = ?")
+                values.append(project_id)
+        if scope is not None:
+            clauses.append("scope = ?")
+            values.append(scope)
+        if kind is not None:
+            clauses.append("kind = ?")
+            values.append(kind)
+        sql = "SELECT * FROM asset"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at ASC, id ASC"
+        found = []
+        needed = set(wanted)
+        for row in conn.execute(sql, values):
+            record = _asset_record(row)
+            have = set(record["tags"] or [])
+            if needed <= have:
+                found.append(record)
+        return found
+
+    @staticmethod
     def delete(conn: sqlite3.Connection, asset_id: str) -> bool:
         asset_id = require_id(asset_id, "asset_id")
         with transaction(conn):
             exists = conn.execute("SELECT 1 FROM asset WHERE id = ?", (asset_id,)).fetchone()
             if exists is None:
                 return False
+            external_roots = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT id FROM look
+                    WHERE parent_look_id IN (SELECT id FROM look WHERE asset_id = ?)
+                      AND asset_id != ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (asset_id, asset_id),
+                )
+            ]
+            segment_ids = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT segment_asset_id FROM segment_ref
+                    WHERE asset_id = ?
+                       OR look_id IN (SELECT id FROM look WHERE asset_id = ?)
+                    """,
+                    (asset_id, asset_id),
+                )
+                if row[0] != asset_id
+            ]
             hashes = [
                 row[0]
                 for row in conn.execute(
@@ -256,11 +374,13 @@ class AssetStore:
             ]
             conn.execute("DELETE FROM asset WHERE id = ?", (asset_id,))
             BlobStore.release_many(conn, hashes)
+            _refresh_many(conn, external_roots)
+            mark_segments_stale(conn, segment_ids, reason="asset deleted")
         return True
 
 
 class LookStore:
-    """Looks under an asset, plus an append-only version row per write."""
+    """Looks under an asset. Each write appends a version; children follow."""
 
     @staticmethod
     def create(
@@ -280,50 +400,37 @@ class LookStore:
             description = require_name(description, "description")
         if prompt is not None:
             prompt = require_name(prompt, "prompt")
+        attribute_map = _attribute_dict(attributes)
         if parent_look_id is not None:
             parent_look_id = require_id(parent_look_id, "parent_look_id")
         look_id = new_id() if look_id is None else require_id(look_id, "look_id")
-        if parent_look_id == look_id:
-            raise StorageError("look cannot parent itself")
-        attributes_json = _attributes(attributes)
-        created_at = utc_now()
         if conn.execute("SELECT 1 FROM asset WHERE id = ?", (asset_id,)).fetchone() is None:
             raise AssetNotFoundError(asset_id)
-        if parent_look_id is not None and conn.execute(
-            "SELECT 1 FROM look WHERE id = ?",
-            (parent_look_id,),
-        ).fetchone() is None:
-            raise LookNotFoundError(parent_look_id)
+        assert_parent_acyclic(conn, look_id, parent_look_id)
+        parent_id, parent_visual = resolve_parent(conn, parent_look_id)
+        covered, own = covered_from_create(description, prompt, attribute_map)
+        visual = materialize(covered, own, parent_visual)
+        created_at = utc_now()
         try:
             with transaction(conn):
-                conn.execute(
-                    """
-                    INSERT INTO look (
-                        id, asset_id, name, parent_look_id, description, prompt,
-                        attributes_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        look_id,
-                        asset_id,
-                        name,
-                        parent_look_id,
-                        description,
-                        prompt,
-                        attributes_json,
-                        created_at,
-                        created_at,
-                    ),
+                _insert_look_row(
+                    conn,
+                    look_id=look_id,
+                    asset_id=asset_id,
+                    name=name,
+                    parent_look_id=parent_id,
+                    visual=visual,
+                    covered=covered,
+                    created_at=created_at,
                 )
                 _insert_version(
                     conn,
                     look_id=look_id,
                     version=1,
-                    parent_look_id=parent_look_id,
+                    parent_look_id=parent_id,
                     name=name,
-                    description=description,
-                    prompt=prompt,
-                    attributes_json=attributes_json,
+                    visual=visual,
+                    covered=covered,
                     reason="create",
                     created_at=created_at,
                 )
@@ -360,7 +467,12 @@ class LookStore:
         attributes: Any = _UNSET,
         reason: str = "edit",
     ) -> dict[str, Any]:
-        """Write the live row and append a ``look_version``. R5 fills in follow-parent."""
+        """Edit owned fields, append a version, and let uncovered descendants follow.
+
+        Pass ``description=None``, ``prompt=None``, or ``attributes=None`` to
+        uncover that field so the next parent value is copied in. Passing a
+        dict for ``attributes`` replaces the owned attribute keys.
+        """
         current = LookStore.get(conn, look_id)
         look_id = current["id"]
         new_name = current["name"] if name is _UNSET else require_name(name)
@@ -370,76 +482,127 @@ class LookStore:
             new_parent = None
         else:
             new_parent = require_id(parent_look_id, "parent_look_id")
-        if new_parent == look_id:
-            raise StorageError("look cannot parent itself")
-        if description is _UNSET:
-            new_description = current["description"]
-        elif description is None:
-            new_description = None
-        else:
-            new_description = require_name(description, "description")
-        if prompt is _UNSET:
-            new_prompt = current["prompt"]
-        elif prompt is None:
-            new_prompt = None
-        else:
-            new_prompt = require_name(prompt, "prompt")
-        if attributes is _UNSET:
-            new_attributes = current["attributes"]
-        else:
-            new_attributes = attributes
-        attributes_json = _attributes(new_attributes)
+        covered = normalize_covered(current["covered"])
+        own = own_from_stored(
+            current["description"],
+            current["prompt"],
+            current["attributes"],
+            covered,
+        )
+        if description is not _UNSET:
+            if description is None:
+                covered["description"] = False
+                own["description"] = None
+            else:
+                covered["description"] = True
+                own["description"] = require_name(description, "description")
+        if prompt is not _UNSET:
+            if prompt is None:
+                covered["prompt"] = False
+                own["prompt"] = None
+            else:
+                covered["prompt"] = True
+                own["prompt"] = require_name(prompt, "prompt")
+        if attributes is not _UNSET:
+            if attributes is None:
+                covered["attributes"] = []
+                own["attributes"] = {}
+            else:
+                attribute_map = _attribute_dict(attributes) or {}
+                covered["attributes"] = sorted(attribute_map)
+                own["attributes"] = attribute_map
+        assert_parent_acyclic(conn, look_id, new_parent)
+        parent_id, parent_visual = resolve_parent(conn, new_parent)
+        visual = materialize(covered, own, parent_visual)
+        covered = normalize_covered(covered)
         unchanged = (
             new_name == current["name"]
-            and new_parent == current["parent_look_id"]
-            and new_description == current["description"]
-            and new_prompt == current["prompt"]
-            and new_attributes == current["attributes"]
+            and parent_id == current["parent_look_id"]
+            and visuals_equal(visual, visual_of(
+                current["description"], current["prompt"], current["attributes"]
+            ))
+            and covered == normalize_covered(current["covered"])
         )
         if unchanged:
             return current
-        if new_parent is not None and conn.execute(
-            "SELECT 1 FROM look WHERE id = ?",
-            (new_parent,),
-        ).fetchone() is None:
-            raise LookNotFoundError(new_parent)
         reason = require_name(reason, "reason")
-        created_at = utc_now()
-        next_version = int(current["version"]) + 1
+        old_visual = visual_of(current["description"], current["prompt"], current["attributes"])
         try:
             with transaction(conn):
-                conn.execute(
-                    """
-                    UPDATE look
-                    SET name = ?, parent_look_id = ?, description = ?, prompt = ?,
-                        attributes_json = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        new_name,
-                        new_parent,
-                        new_description,
-                        new_prompt,
-                        attributes_json,
-                        created_at,
-                        look_id,
-                    ),
-                )
-                _insert_version(
+                _write_look_state(
                     conn,
                     look_id=look_id,
-                    version=next_version,
-                    parent_look_id=new_parent,
                     name=new_name,
-                    description=new_description,
-                    prompt=new_prompt,
-                    attributes_json=attributes_json,
+                    parent_look_id=parent_id,
+                    visual=visual,
+                    covered=covered,
                     reason=reason,
-                    created_at=created_at,
+                    version=int(current["version"]) + 1,
+                )
+                _propagate_descendants(
+                    conn,
+                    look_id,
+                    origin_visual_changed=not visuals_equal(visual, old_visual),
+                    reason=reason,
                 )
         except sqlite3.IntegrityError as exc:
             raise StorageError(f"could not update look {look_id}") from exc
         return LookStore.get(conn, look_id)
+
+    @staticmethod
+    def rollback(conn: sqlite3.Connection, look_id: str, version: int) -> dict[str, Any]:
+        """Restore a historical snapshot, then refresh descendants from it.
+
+        The restored row is itself a new version (``reason='rollback'``).
+        Uncovered fields stay uncovered, so a later parent edit can follow
+        again. This does not re-copy the current parent over the snapshot.
+        """
+        current = LookStore.get(conn, look_id)
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise StorageError("version must be a positive integer")
+        row = conn.execute(
+            "SELECT * FROM look_version WHERE look_id = ? AND version = ?",
+            (current["id"], version),
+        ).fetchone()
+        if row is None:
+            raise LookVersionNotFoundError(current["id"], version)
+        snapshot = _version_record(row)
+        assert_parent_acyclic(conn, current["id"], snapshot["parent_look_id"])
+        visual = visual_of(snapshot["description"], snapshot["prompt"], snapshot["attributes"])
+        covered = normalize_covered(snapshot["covered"])
+        unchanged = (
+            snapshot["name"] == current["name"]
+            and snapshot["parent_look_id"] == current["parent_look_id"]
+            and visuals_equal(
+                visual,
+                visual_of(current["description"], current["prompt"], current["attributes"]),
+            )
+            and covered == normalize_covered(current["covered"])
+        )
+        if unchanged:
+            return current
+        old_visual = visual_of(current["description"], current["prompt"], current["attributes"])
+        try:
+            with transaction(conn):
+                _write_look_state(
+                    conn,
+                    look_id=current["id"],
+                    name=snapshot["name"],
+                    parent_look_id=snapshot["parent_look_id"],
+                    visual=visual,
+                    covered=covered,
+                    reason="rollback",
+                    version=int(current["version"]) + 1,
+                )
+                _propagate_descendants(
+                    conn,
+                    current["id"],
+                    origin_visual_changed=not visuals_equal(visual, old_visual),
+                    reason="rollback",
+                )
+        except sqlite3.IntegrityError as exc:
+            raise StorageError(f"could not roll back look {current['id']}") from exc
+        return LookStore.get(conn, current["id"])
 
     @staticmethod
     def list_versions(conn: sqlite3.Connection, look_id: str) -> list[dict[str, Any]]:
@@ -452,17 +615,11 @@ class LookStore:
             """,
             (require_id(look_id, "look_id"),),
         ).fetchall()
-        versions = []
-        for row in rows:
-            record = row_dict(row)
-            record["attributes"] = _load_attributes(record.pop("attributes_json"))
-            record["version"] = int(record["version"])
-            versions.append(record)
-        return versions
+        return [_version_record(row) for row in rows]
 
     @staticmethod
     def select_image(conn: sqlite3.Connection, look_id: str, image_id: str) -> dict[str, Any]:
-        """Point ``look_selection`` at one image. R5 decides when a change is stale."""
+        """Point ``look_selection`` at one image. Choosing an image does not spend."""
         look = LookStore.get(conn, look_id)
         image = ImageStore.get(conn, image_id)
         if image["look_id"] not in (None, look["id"]):
@@ -494,6 +651,14 @@ class LookStore:
             exists = conn.execute("SELECT 1 FROM look WHERE id = ?", (look_id,)).fetchone()
             if exists is None:
                 return False
+            children = descendant_ids(conn, look_id)
+            segment_ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT segment_asset_id FROM segment_ref WHERE look_id = ?",
+                    (look_id,),
+                )
+            ]
             hashes = [
                 row[0]
                 for row in conn.execute(
@@ -503,11 +668,17 @@ class LookStore:
             ]
             conn.execute("DELETE FROM look WHERE id = ?", (look_id,))
             BlobStore.release_many(conn, hashes)
+            _refresh_many(conn, children)
+            mark_segments_stale(conn, segment_ids, reason="look deleted")
         return True
 
 
 class ImageStore:
-    """Image records. The bytes themselves live in :class:`BlobStore`."""
+    """Image records. The bytes themselves live in :class:`BlobStore`.
+
+    A new picture is a new row. Identity is ``image.id``, not a filename glob.
+    ``source``, ``model``, ``prompt``, and ``cost`` are the provenance.
+    """
 
     SOURCES = Schema.IMAGE_SOURCES
 
@@ -630,6 +801,171 @@ def _optional_pixel(value: Any, field: str) -> int | None:
     return value
 
 
+def _attribute_dict(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise StorageError("attributes must be a JSON object")
+    dump_json(value)
+    return dict(value)
+
+
+def _insert_look_row(
+    conn: sqlite3.Connection,
+    *,
+    look_id: str,
+    asset_id: str,
+    name: str,
+    parent_look_id: str | None,
+    visual: dict[str, Any],
+    covered: dict[str, Any],
+    created_at: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO look (
+            id, asset_id, name, parent_look_id, description, prompt,
+            attributes_json, created_at, updated_at, covered_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            look_id,
+            asset_id,
+            name,
+            parent_look_id,
+            visual["description"],
+            visual["prompt"],
+            _attributes(visual["attributes"]),
+            created_at,
+            created_at,
+            dump_covered(covered),
+        ),
+    )
+
+
+def _write_look_state(
+    conn: sqlite3.Connection,
+    *,
+    look_id: str,
+    name: str,
+    parent_look_id: str | None,
+    visual: dict[str, Any],
+    covered: dict[str, Any],
+    reason: str,
+    version: int,
+) -> None:
+    created_at = utc_now()
+    conn.execute(
+        """
+        UPDATE look
+        SET name = ?, parent_look_id = ?, description = ?, prompt = ?,
+            attributes_json = ?, covered_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            name,
+            parent_look_id,
+            visual["description"],
+            visual["prompt"],
+            _attributes(visual["attributes"]),
+            dump_covered(covered),
+            created_at,
+            look_id,
+        ),
+    )
+    _insert_version(
+        conn,
+        look_id=look_id,
+        version=version,
+        parent_look_id=parent_look_id,
+        name=name,
+        visual=visual,
+        covered=covered,
+        reason=reason,
+        created_at=created_at,
+    )
+
+
+def _propagate_descendants(
+    conn: sqlite3.Connection,
+    look_id: str,
+    *,
+    origin_visual_changed: bool,
+    reason: str,
+) -> None:
+    if origin_visual_changed:
+        mark_look_outputs_stale(conn, look_id, reason=reason)
+    _refresh_many(conn, descendant_ids(conn, look_id))
+
+
+def _refresh_many(conn: sqlite3.Connection, root_ids: list[str]) -> None:
+    """Rematerialize each look, then its descendants, from the current parent."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for root_id in root_ids:
+        if root_id in seen:
+            continue
+        if conn.execute("SELECT 1 FROM look WHERE id = ?", (root_id,)).fetchone() is None:
+            continue
+        seen.add(root_id)
+        ordered.append(root_id)
+        for child_id in descendant_ids(conn, root_id):
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            ordered.append(child_id)
+    for look_id in ordered:
+        _refresh_inherited(conn, look_id)
+
+
+def _refresh_inherited(conn: sqlite3.Connection, look_id: str) -> bool:
+    """Copy uncovered fields from the parent. Append ``follow`` when they change."""
+    row = conn.execute("SELECT * FROM look WHERE id = ?", (look_id,)).fetchone()
+    if row is None:
+        return False
+    current = _look_record(conn, row)
+    covered = normalize_covered(current["covered"])
+    own = own_from_stored(
+        current["description"],
+        current["prompt"],
+        current["attributes"],
+        covered,
+    )
+    parent_id, parent_visual = resolve_parent(conn, current["parent_look_id"])
+    visual = materialize(covered, own, parent_visual)
+    old_visual = visual_of(current["description"], current["prompt"], current["attributes"])
+    parent_changed = parent_id != current["parent_look_id"]
+    visual_changed = not visuals_equal(visual, old_visual)
+    if not parent_changed and not visual_changed:
+        return False
+    _write_look_state(
+        conn,
+        look_id=look_id,
+        name=current["name"],
+        parent_look_id=parent_id,
+        visual=visual,
+        covered=covered,
+        reason="follow",
+        version=int(current["version"]) + 1,
+    )
+    if visual_changed:
+        mark_look_outputs_stale(conn, look_id, reason="follow")
+    return visual_changed
+
+
+def _version_record(row: sqlite3.Row) -> dict[str, Any]:
+    record = row_dict(row)
+    record["attributes"] = _load_attributes(record.pop("attributes_json")) or {}
+    record["covered"] = load_covered(
+        record.pop("covered_json"),
+        description=record["description"],
+        prompt=record["prompt"],
+        attributes=record["attributes"],
+    )
+    record["version"] = int(record["version"])
+    return record
+
+
 def _insert_version(
     conn: sqlite3.Connection,
     *,
@@ -637,9 +973,8 @@ def _insert_version(
     version: int,
     parent_look_id: str | None,
     name: str,
-    description: str | None,
-    prompt: str | None,
-    attributes_json: str | None,
+    visual: dict[str, Any],
+    covered: dict[str, Any],
     reason: str,
     created_at: str,
 ) -> None:
@@ -647,8 +982,8 @@ def _insert_version(
         """
         INSERT INTO look_version (
             id, look_id, version, parent_look_id, name, description, prompt,
-            attributes_json, reason, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            attributes_json, reason, created_at, covered_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             new_id(),
@@ -656,10 +991,11 @@ def _insert_version(
             version,
             parent_look_id,
             name,
-            description,
-            prompt,
-            attributes_json,
+            visual["description"],
+            visual["prompt"],
+            _attributes(visual["attributes"]),
             reason,
             created_at,
+            dump_covered(covered),
         ),
     )
