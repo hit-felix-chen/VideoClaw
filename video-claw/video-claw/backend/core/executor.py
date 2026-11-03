@@ -12,23 +12,44 @@ the same quote; declining skips it. Regenerating one node reruns only that
 node and leaves its successors stale.
 
 A video confirm that ``ProjectBudget.authorize`` accepts then submits.
-The node runner prepares the Seedance request. Submit uses the video
-adapter passed into ``GraphExecutor`` when tests inject one, otherwise the
-registry adapter for that model when its provider key is configured.
-Seedance 2.5 (``doubao-seedance-2-5-260628``) resolves to
+Before that authorize, the confirm claims the node in SQLite
+(``BEGIN IMMEDIATE``): ``awaiting_user`` becomes ``running``. The loser of
+two concurrent confirms is rejected immediately and does not authorize or
+submit. The node runner prepares the Seedance request. Submit uses the
+video adapter passed into ``GraphExecutor`` when tests inject one,
+otherwise the registry adapter for that model when its provider key is
+configured. Seedance 2.5 (``doubao-seedance-2-5-260628``) resolves to
 ``ArkVideoAdapter``, which reads ``ARK_API_KEY`` /
-``api_providers.ark.api_key``. Duration on that request is the shot length
-when it sits inside the model's verified range. Seedance 2.5 allows 4 to
-30 seconds, or -1 when the model allows auto. The node is marked done and
-the reserved quote is spent only after ``submit`` returns a result id or
-path. ``ArkVideoAdapter.submit`` already waits for the asset and returns
-that path, matching its existing contract, so the executor does not poll a
-second time. If ``submit`` raises or returns nothing, the reserved quote is
+``api_providers.ark.api_key``.
+
+``adapter.submit`` runs synchronously. For Ark that one call submits the
+task, polls until the vendor finishes, downloads the file to ``save_path``,
+and returns the remote video URL. ``result_id`` is that URL. The local
+``save_path`` is stored on the node result beside it. A bare task id is not
+a finished result. Duration on the request is the shot length when it sits
+inside the model's verified range. Seedance 2.5 allows 4 to 30 seconds, or
+-1 when the shot length is outside that range and the model allows auto.
+
+The node is marked done and the reserved quote is spent only after that
+URL or path comes back. Reference asset ids are turned into on-disk image
+files immediately before ``submit``. A missing image or file skips the
+quote and leaves the node awaiting the user; the asset id is not sent as a
+URL. With no injected adapter and no provider key, the runner's prepared
+request is still stored with those asset ids and spent. That is the
+dispatcher path the existing suite drives.
+
+If ``submit`` raises or returns nothing useful, the reserved quote is
 marked skipped, the same release an impact regenerate uses for a runner
-failure. The node stays awaiting the user, ``submit_error`` is stored on
-it, and the error is raised. No spent row is written. With no injected
-adapter and no provider key, the runner's prepared request is still stored
-and spent, which is the dispatcher path the existing suite drives.
+failure. The claim is put back to ``awaiting_user``, ``submit_error`` is
+stored with ``ARK_API_KEY`` redacted, and the error is raised. No spent row
+is written.
+
+A claim left in ``running`` because the process died is reclaimable after
+``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes; a live Seedance poll is
+about 10 minutes). The next ``confirm`` takes a stale claim, and
+``GraphExecutor.recover_stale_submit_claims`` does the same for startup.
+A fresh ``running`` claim is rejected so a killed process cannot stay
+``running`` forever and a live submit cannot be double-spent.
 
 Confirming a look impact is the path that does rerun the confirmed
 downstream set. Each of those nodes goes through ``run_node``. A video node
@@ -72,6 +93,9 @@ _NAMED = frozenset({"video", "image", "vlm", "tts"})
 _BUDGET_ONLY = frozenset({"image", "vlm", "tts"})
 _STRUCTURAL = frozenset({"script", "storyboard", "previz"})
 _OPEN = frozenset({NodeStatus.PENDING, NodeStatus.STALE, NodeStatus.FAILED})
+# Longer than ArkVideoAdapter's poll (about 10 minutes) so a live submit is
+# not stolen. A running row older than this was left by a dead process.
+VIDEO_SUBMIT_CLAIM_TTL_SECONDS = 30 * 60
 
 
 def _default_runner(call: dict) -> dict:
@@ -201,19 +225,108 @@ def _video_output_path(project_id: str, node_id: str) -> str:
     return str(Path(Config.RESULT_DIR) / "video" / safe(project_id) / f"{safe(node_id)}.mp4")
 
 
+def _claim_cutoff() -> str:
+    from datetime import datetime, timedelta, timezone
+
+    moment = datetime.now(timezone.utc) - timedelta(seconds=VIDEO_SUBMIT_CLAIM_TTL_SECONDS)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _redact_secret(message: str) -> str:
+    """Hide ``Config.ARK_API_KEY`` if a provider error echoes it."""
+    from config import Config
+
+    key = Config.ARK_API_KEY
+    if isinstance(key, str) and key and key in message:
+        return message.replace(key, "***")
+    return message
+
+
+def _looks_like_url_or_path(text: str) -> bool:
+    """A remote URL or a filesystem path. A bare task id is neither."""
+    if text.startswith(("http://", "https://", "file://")):
+        return True
+    return text.startswith(("/", "\\")) or "/" in text or "\\" in text
+
+
 def _submit_ref(value: Any) -> Optional[str]:
-    """A result id or path from ``adapter.submit``. Empty means the call failed."""
+    """Remote URL or local path from a finished submit.
+
+    ``ArkVideoAdapter.submit`` submits, polls, downloads, and returns the
+    remote video URL. That string is ``result_id``. A bare task id is not
+    a finished result and is treated as failure.
+    """
+    candidates: list[str] = []
     if isinstance(value, str):
         text = value.strip()
-        return text or None
-    if isinstance(value, dict):
+        if text:
+            candidates.append(text)
+    elif isinstance(value, dict):
         if value.get("error") or value.get("ok") is False or value.get("success") is False:
             return None
-        for key in ("result_id", "task_id", "id", "path", "url", "save_path"):
+        for key in ("url", "path", "save_path", "result_id", "task_id", "id"):
             item = value.get(key)
             if isinstance(item, str) and item.strip():
-                return item.strip()
+                candidates.append(item.strip())
+    for text in candidates:
+        if _looks_like_url_or_path(text):
+            return text
     return None
+
+
+def _look_by_asset(references: Any) -> dict:
+    """First resolved mention per asset, including its look when one was named."""
+    found: dict = {}
+    if not isinstance(references, dict):
+        return found
+    for mention in references.get("mentions") or []:
+        if not isinstance(mention, dict) or not mention.get("resolved"):
+            continue
+        for match in mention.get("matches") or []:
+            if not isinstance(match, dict):
+                continue
+            asset_id = match.get("asset_id")
+            if not isinstance(asset_id, str) or not asset_id or asset_id in found:
+                continue
+            look_id = match.get("look_id")
+            found[asset_id] = look_id if isinstance(look_id, str) and look_id else None
+            break
+    return found
+
+
+def _image_disk_path(conn, asset_id: str, look_id: Optional[str]) -> Optional[str]:
+    """File for this reference. Prefer the mentioned look, else the asset image."""
+    from pathlib import Path
+
+    from storage.assets import ImageStore
+    from storage.blobs import BlobStore
+    from storage.database import StorageError
+
+    rows: list = []
+    if look_id:
+        rows = ImageStore.list(conn, asset_id=asset_id, look_id=look_id)
+    if not rows:
+        listed = ImageStore.list(conn, asset_id=asset_id)
+        bare = [row for row in listed if not row.get("look_id")]
+        rows = bare or listed
+    for row in reversed(rows):
+        digest = row.get("blob_hash")
+        if not isinstance(digest, str) or not digest:
+            continue
+        try:
+            info = BlobStore.info(conn, digest)
+        except StorageError:
+            continue
+        path = info.get("path")
+        if isinstance(path, str) and Path(path).is_file():
+            return path
+    return None
+
+
+def _batch_provider_called(nodes: Any) -> bool:
+    if not isinstance(nodes, list):
+        return False
+    return any(bool(item.get("provider_called")) for item in nodes if isinstance(item, dict))
 
 
 def _video_submit_params(
@@ -389,13 +502,15 @@ class GraphExecutor:
     def confirm(self, project_id: str, node_id: str) -> dict:
         """Accept a held video quote. This is the first ledger write for that call.
 
-        Authorize reserves the quote. The video adapter submits only after
-        that reservation is allowed. Spent and done follow a successful submit.
+        The node is claimed (``awaiting_user`` to ``running``) before
+        authorize. The video adapter submits only after that reservation is
+        allowed. Spent and done follow a successful submit. A failed submit
+        returns the node to ``awaiting_user``.
         """
         graph = self._load(project_id)
         node_id = self._node_id(graph, node_id)
         node = graph.node(node_id)
-        if node.status != NodeStatus.AWAITING_USER:
+        if node.status not in {NodeStatus.AWAITING_USER, NodeStatus.RUNNING}:
             raise _GateError("node is not awaiting confirmation")
         fields = node.metadata.get("pending_call")
         if not isinstance(fields, dict):
@@ -403,35 +518,182 @@ class GraphExecutor:
         existing = self._awaiting_entry(project_id, node_id)
         if existing is not None:
             return self._held_budget(project_id, graph, node_id, existing)
-        request, duration, _quantity = self._request(fields)
-        view = ProjectBudget.authorize(
-            self.conn,
-            project_id,
-            request,
-            node_id=node_id,
-            kind=fields.get("modality") or "video",
-        )
-        references, versions = self._context(project_id, fields)
-        if not view["allowed"]:
-            self._save(project_id, graph)
-            return self._from_budget(
+        self._acquire_submit_claim(project_id, graph, node_id)
+        try:
+            request, duration, _quantity = self._request(fields)
+            view = ProjectBudget.authorize(
+                self.conn,
+                project_id,
+                request,
+                node_id=node_id,
+                kind=fields.get("modality") or "video",
+            )
+            references, versions = self._context(project_id, fields)
+            if not view["allowed"]:
+                self._release_submit_claim(project_id, graph, node_id)
+                return self._from_budget(
+                    project_id,
+                    graph,
+                    node_id,
+                    view,
+                    duration=duration,
+                    references=references,
+                    versions=versions,
+                    call_confirmed=True,
+                )
+            return self._finish(
                 project_id,
                 graph,
                 node_id,
+                fields,
                 view,
-                duration=duration,
-                references=references,
-                versions=versions,
                 call_confirmed=True,
             )
-        return self._finish(
-            project_id,
-            graph,
-            node_id,
-            fields,
-            view,
-            call_confirmed=True,
-        )
+        except Exception:
+            if graph.node(node_id).status == NodeStatus.RUNNING:
+                self._release_submit_claim(project_id, graph, node_id)
+            raise
+
+    @staticmethod
+    def recover_stale_submit_claims(conn) -> list[str]:
+        """Release video submit claims left ``running`` by a dead process.
+
+        A row older than ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` is put back to
+        ``awaiting_user`` and any unsettled quote is skipped. Call this on
+        startup. ``confirm`` performs the same reclaim, so a process that
+        never calls this still unsticks on the next confirm after the TTL.
+        A claim newer than the TTL is left alone so a live submit is not
+        interrupted.
+        """
+        cutoff = _claim_cutoff()
+        rows = conn.execute(
+            """
+            SELECT project_id, node_id FROM node_state
+            WHERE status = ? AND updated_at < ?
+            ORDER BY project_id, node_id
+            """,
+            (NodeStatus.RUNNING.value, cutoff),
+        ).fetchall()
+        released: list[str] = []
+        for row in rows:
+            project_id = row["project_id"]
+            node_id = row["node_id"]
+            executor = GraphExecutor(conn)
+            try:
+                graph = executor._load(project_id)
+            except _GateError:
+                continue
+            if node_id not in graph:
+                continue
+            node = graph.node(node_id)
+            if node.kind not in _VIDEO and _modality(node, {}) != "video":
+                continue
+            if node.status not in {NodeStatus.RUNNING, NodeStatus.AWAITING_USER}:
+                continue
+            executor._release_quoted_reservation(project_id, node_id)
+            if node.status == NodeStatus.RUNNING:
+                graph.transition(node_id, NodeStatus.AWAITING_USER)
+            executor._save(project_id, graph)
+            released.append(node_id)
+        return released
+
+    def _acquire_submit_claim(self, project_id: str, graph: DependencyGraph, node_id: str) -> None:
+        """Take the single in-flight submit for this node.
+
+        ``BEGIN IMMEDIATE`` plus ``UPDATE ... WHERE status = 'awaiting_user'``
+        lets one connection win. The other sees ``running`` and is rejected
+        before authorize or ``submit``. A ``running`` row older than
+        ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` is a dead claim: its unsettled
+        quote is skipped and this confirm takes the node.
+        """
+        now = utc_now()
+        cutoff = _claim_cutoff()
+        with transaction(self.conn):
+            row = self.conn.execute(
+                """
+                SELECT status, updated_at, pinned FROM node_state
+                WHERE project_id = ? AND node_id = ?
+                """,
+                (project_id, node_id),
+            ).fetchone()
+            if row is not None and row["pinned"]:
+                raise _GateError("node submit is already in progress")
+            status = None if row is None else row["status"]
+            updated_at = None if row is None else row["updated_at"]
+            stale = (
+                status == NodeStatus.RUNNING.value
+                and isinstance(updated_at, str)
+                and updated_at < cutoff
+            )
+            if status == NodeStatus.RUNNING.value and not stale:
+                raise _GateError("node submit is already in progress")
+            if status not in (None, NodeStatus.AWAITING_USER.value) and not stale:
+                raise _GateError("node is not awaiting confirmation")
+            if stale:
+                self._release_quoted_reservation(project_id, node_id)
+                changed = self.conn.execute(
+                    """
+                    UPDATE node_state
+                    SET status = ?, updated_at = ?
+                    WHERE project_id = ? AND node_id = ? AND status = ?
+                      AND pinned = 0 AND updated_at = ?
+                    """,
+                    (
+                        NodeStatus.RUNNING.value,
+                        now,
+                        project_id,
+                        node_id,
+                        NodeStatus.RUNNING.value,
+                        updated_at,
+                    ),
+                )
+                if changed.rowcount != 1:
+                    raise _GateError("node submit is already in progress")
+            elif status is None:
+                self.conn.execute(
+                    """
+                    INSERT INTO node_state (project_id, node_id, status, pinned, updated_at)
+                    VALUES (?, ?, ?, 0, ?)
+                    """,
+                    (project_id, node_id, NodeStatus.RUNNING.value, now),
+                )
+            else:
+                changed = self.conn.execute(
+                    """
+                    UPDATE node_state
+                    SET status = ?, updated_at = ?
+                    WHERE project_id = ? AND node_id = ? AND status = ? AND pinned = 0
+                    """,
+                    (
+                        NodeStatus.RUNNING.value,
+                        now,
+                        project_id,
+                        node_id,
+                        NodeStatus.AWAITING_USER.value,
+                    ),
+                )
+                if changed.rowcount != 1:
+                    raise _GateError("node submit is already in progress")
+            self._mark_submitting(graph, node_id)
+            self._save(project_id, graph)
+
+    def _mark_submitting(self, graph: DependencyGraph, node_id: str) -> None:
+        status = graph.node(node_id).status
+        if status == NodeStatus.RUNNING:
+            return
+        if status == NodeStatus.AWAITING_USER:
+            graph.transition(node_id, NodeStatus.RUNNING)
+            return
+        raise _GateError("node is not awaiting confirmation")
+
+    def _release_submit_claim(self, project_id: str, graph: DependencyGraph, node_id: str) -> None:
+        """Put a claimed node back to ``awaiting_user`` so a later confirm can retry."""
+        status = graph.node(node_id).status
+        if status == NodeStatus.DONE:
+            return
+        if status == NodeStatus.RUNNING:
+            graph.transition(node_id, NodeStatus.AWAITING_USER)
+        self._save(project_id, graph)
 
     def decline_node(self, project_id: str, node_id: str) -> dict:
         graph = self._load(project_id)
@@ -629,7 +891,7 @@ class GraphExecutor:
             "failed_node_id": summary.get("failed_node_id"),
             "error": summary.get("error"),
             "halted": bool(summary.get("halted")),
-            "provider_called": False,
+            "provider_called": _batch_provider_called(summary.get("nodes")),
         }
 
     def _load_confirmation(
@@ -774,7 +1036,7 @@ class GraphExecutor:
         body["will_spend"] = False
         body["spent"] = bool(summary.get("spent"))
         body["submitted"] = bool(summary.get("submitted"))
-        body["provider_called"] = False
+        body["provider_called"] = _batch_provider_called(summary.get("nodes"))
         body["nodes"] = list(summary.get("nodes") or [])
         body["spent_node_ids"] = list(summary.get("spent_node_ids") or [])
         body["failed"] = bool(summary.get("failed"))
@@ -903,7 +1165,15 @@ class GraphExecutor:
         prepared: Any,
         references: dict,
     ) -> tuple:
-        """Call ``adapter.submit`` after authorize. Failure releases the quote."""
+        """Call ``adapter.submit`` after authorize. Failure releases the quote.
+
+        Submit blocks until the adapter has polled and downloaded. The
+        returned value is the remote URL (or a local path). It is stored as
+        ``result_id``. ``save_path`` on the same result is the local file
+        the adapter was asked to write. Reference ids are resolved to image
+        files here, and only here, so the no-key dispatcher result keeps
+        asset ids.
+        """
         adapter, spec = self._video_submitter(_text(fields.get("model_id")))
         if adapter is None or spec is None:
             return prepared, False
@@ -913,6 +1183,7 @@ class GraphExecutor:
                 self._abort_reserved_video(project_id, graph, node_id, RuntimeError(error.strip()))
         params = _video_submit_params(project_id, node_id, fields, prepared, references, spec)
         try:
+            params = self._with_reference_files(params, references)
             vendor = adapter.submit(spec, params)
         except Exception as exc:
             self._abort_reserved_video(project_id, graph, node_id, exc)
@@ -929,9 +1200,33 @@ class GraphExecutor:
         merged["result_id"] = ref
         merged["model_id"] = spec.id
         merged["generation_mode"] = params.get("generation_mode")
-        merged["reference_image_paths"] = list(params.get("reference_image_paths") or [])
         merged["duration"] = params.get("duration")
+        if params.get("save_path"):
+            merged["save_path"] = params["save_path"]
         return merged, True
+
+    def _with_reference_files(self, params: dict, references: Any) -> dict:
+        """Replace asset ids with on-disk image files. Never pass an id through."""
+        from pathlib import Path
+
+        asset_ids = params.get("reference_image_paths") or []
+        if not isinstance(asset_ids, list) or not asset_ids:
+            return params
+        looks = _look_by_asset(references)
+        files: list[str] = []
+        for token in asset_ids:
+            if not isinstance(token, str) or not token:
+                raise RuntimeError("reference image file is missing")
+            if Path(token).is_file():
+                files.append(token)
+                continue
+            path = _image_disk_path(self.conn, token, looks.get(token))
+            if path is None:
+                raise RuntimeError("reference image file is missing")
+            files.append(path)
+        updated = dict(params)
+        updated["reference_image_paths"] = files
+        return updated
 
     def _abort_reserved_video(
         self,
@@ -940,11 +1235,11 @@ class GraphExecutor:
         node_id: str,
         exc: BaseException,
     ) -> NoReturn:
-        """Skip the reserved quote and surface the submit error. The node stays open."""
+        """Skip the reserved quote, drop the claim, and surface the error."""
         self._release_quoted_reservation(project_id, node_id)
-        message = str(exc).strip() or exc.__class__.__name__
+        message = _redact_secret(str(exc).strip() or exc.__class__.__name__)
         graph.update_metadata(node_id, submit_error=message)
-        self._save(project_id, graph)
+        self._release_submit_claim(project_id, graph, node_id)
         raise _GateError(f"video submit failed: {message}") from exc
 
     def _submit(self, call: dict) -> Any:
