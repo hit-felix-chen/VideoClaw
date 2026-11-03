@@ -72,8 +72,10 @@ class AgentInterface(ABC):
             raise ValueError(f"Missing required model configuration: {key}")
         return str(value)
 
-    def _cancellable_query(self, llm, prompt: str, image_urls=[], model="gemini-3-flash-preview", safe_content=True, task_id=None, web_search=False):
-        """在 LLM 调用前后检查取消状态"""
+    def _cancellable_query(self, llm, prompt: str, image_urls=[], model=None, safe_content=True, task_id=None, web_search=False):
+        """在 LLM 调用前后检查取消状态。model 必须由调用方传入已注册的模型 id。"""
+        if not model:
+            raise ValueError("Missing required model configuration: model")
         self._check_cancel()
         # 将位置参数映射给 llm.query
         result = llm.query(prompt, image_urls, model, safe_content, task_id, web_search)

@@ -616,7 +616,7 @@ class ReferenceGeneratorAgent(AgentInterface):
     async def process(self, input_data: Any, intervention: Optional[Dict] = None) -> Dict:
         from config import settings
         from models.image_client import ImageClient
-        from models.llm_client import LLM
+        from models.llm_openai import OpenAICompatLLM
 
         # 从编排器注入的 session 快照补齐缺失参数，避免各阶段直接读取 session JSON。
         input_data = self._merge_session_params(input_data)
@@ -748,7 +748,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                         else:
                             ff_prompt_tpl = load_prompt('reference', 'first_frame', 'zh' if is_zh else 'en')
                             try:
-                                local_llm = LLM()
+                                local_llm = OpenAICompatLLM()
                                 ff_prompt_resp = self._cancellable_query(
                                     local_llm,
                                     prompt=ff_prompt_tpl.format(
@@ -913,7 +913,7 @@ class ReferenceGeneratorAgent(AgentInterface):
                     else:
                         ff_prompt_tpl = load_prompt('reference', "first_frame", 'zh' if is_zh else 'en')
                         try:
-                            local_llm = LLM()
+                            local_llm = OpenAICompatLLM()
                             ff_prompt_resp = self._cancellable_query(
                                 local_llm,
                                 prompt=ff_prompt_tpl.format(

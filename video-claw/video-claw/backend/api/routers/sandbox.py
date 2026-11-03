@@ -230,8 +230,8 @@ async def sandbox_delete_record(record_id: str):
 @router.post("/api/sandbox/llm")
 async def sandbox_llm(req: SandboxLLMRequest):
     """临时工作台 - LLM 文字生成"""
-    from models.llm_client import LLM
-    client = LLM()
+    from models.llm_openai import OpenAICompatLLM
+    client = OpenAICompatLLM()
     input_data = {"prompt": req.prompt, "web_search": req.web_search}
     task_id = _start_active_task("llm", req.model, input_data)
     try:

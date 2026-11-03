@@ -172,6 +172,8 @@ class ModelSpec:
     )
     price_formula: str = ""
     todos: list = field(default_factory=list)
+    # LLM only. ``supported`` is false when the capability was checked and is absent.
+    web_search: Optional[dict] = None
 
     def __post_init__(self) -> None:
         self.modalities = CapabilityText.modalities(self.types)
@@ -227,6 +229,8 @@ class ModelSpec:
             payload["price_formula"] = self.price_formula
         if self.todos:
             payload["todo"] = list(self.todos)
+        if self.web_search is not None:
+            payload["web_search"] = dict(self.web_search)
         return payload
 
     def as_metadata(self) -> dict:
