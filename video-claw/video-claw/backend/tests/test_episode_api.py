@@ -4,6 +4,8 @@ Video submit goes through a recording adapter. The Seedance HTTP client is
 patched to fail if a test reaches it.
 """
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,6 +20,7 @@ from storage import Database, GraphStore
 
 IMAGE = "r9-image-per-image"
 TTS = "r9-tts-per-10k"
+LLM = "r9-llm"
 RESULT_URL = "https://cdn.example/episode.mp4"
 
 
@@ -57,6 +60,16 @@ def priced():
     )
     ModelRegistry.add_spec(
         ModelSpec(
+            id=LLM,
+            name="R9 llm",
+            provider="fixture",
+            types=["llm"],
+            output="text",
+            currency="CNY",
+        )
+    )
+    ModelRegistry.add_spec(
+        ModelSpec(
             id=TTS,
             name="R9 tts",
             provider="fixture",
@@ -81,6 +94,7 @@ def priced():
     finally:
         ModelRegistry.remove_spec(IMAGE)
         ModelRegistry.remove_spec(TTS)
+        ModelRegistry.remove_spec(LLM)
 
 
 @pytest.fixture
@@ -214,16 +228,16 @@ def test_prompt_and_model_updates_survive_reload(api, priced):
 
     models = client.patch(
         f"/api/v2/projects/{project_id}/models",
-        json={"llm_model": "llm-saved", "image_model": IMAGE},
+        json={"llm_model": LLM, "image_model": IMAGE},
     )
     assert models.status_code == 200, models.text
     updated = {item["node_id"]: item["model_id"] for item in models.json()["updated"]}
-    assert updated["script"] == "llm-saved"
-    assert updated["storyboard"] == "llm-saved"
+    assert updated["script"] == LLM
+    assert updated["storyboard"] == LLM
     assert updated["character"] == IMAGE
     assert updated["reference"] == IMAGE
     status = client.get(f"/api/v2/projects/{project_id}/status").json()
-    assert _node(status, "script")["metadata"]["model_id"] == "llm-saved"
+    assert _node(status, "script")["metadata"]["model_id"] == LLM
     assert _node(status, "character")["metadata"]["model_id"] == IMAGE
 
     empty = client.patch(f"/api/v2/projects/{project_id}/models", json={})
@@ -313,11 +327,20 @@ def test_one_episode_confirm_submits_once_with_fake_adapter(api, priced):
     queried = client.post(f"/api/v2/projects/{project_id}/nodes/video/confirm?force_new=true")
     assert queried.status_code == 400
     assert adapter.calls == []
-
-    done = client.post(
+    explicit_false = client.post(
         f"/api/v2/projects/{project_id}/nodes/video/confirm",
         json={"force_new": False},
     )
+    assert explicit_false.status_code == 400
+    assert explicit_false.json()["detail"] == "force_new is only valid on retry_video_submit"
+    assert adapter.calls == []
+    query_false = client.post(
+        f"/api/v2/projects/{project_id}/nodes/video/confirm?force_new=false"
+    )
+    assert query_false.status_code == 400
+    assert adapter.calls == []
+
+    done = client.post(f"/api/v2/projects/{project_id}/nodes/video/confirm")
     assert done.status_code == 200, done.text
     assert done.json()["status"] == "done"
     assert done.json()["call_confirmed"] is True
@@ -429,3 +452,144 @@ def test_retry_video_submit_defaults_force_new_false(api, priced):
     final = client.get(f"/api/v2/projects/{project_id}/status").json()
     assert _node(final, "video")["metadata"].get("vendor_task_id") in (None, "")
     assert _node(final, "video")["status"] == "done"
+
+
+def test_confirm_without_a_vendor_key_does_not_spend(api, priced, monkeypatch):
+    import config as config_module
+
+    monkeypatch.setattr(config_module.Config, "ARK_API_KEY", "", raising=False)
+    monkeypatch.setattr(config_module.Config, "DASHSCOPE_API_KEY", "", raising=False)
+    monkeypatch.setattr(config_module.Config, "KLING_API_KEY", "", raising=False)
+    monkeypatch.setattr("api.routers.executor._executor", lambda conn: GraphExecutor(conn))
+    client, _data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    held = _run_until_video(client, project_id)
+    assert held["status"] == "awaiting_user"
+    assert held["quote"]["max"] == 70.0
+
+    refused = client.post(f"/api/v2/projects/{project_id}/nodes/video/confirm")
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "未配置视频厂商密钥，不会提交也不会入账"
+    retry = client.post(f"/api/v2/projects/{project_id}/nodes/video/retry_video_submit")
+    assert retry.status_code == 409
+    assert retry.json()["detail"] == "未配置视频厂商密钥，不会提交也不会入账"
+
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    video = _node(status, "video")
+    assert video["status"] == "awaiting_user"
+    assert video["quote"]["max"] == 70.0
+    assert [row for row in status["ledger"] if row["node_id"] == "video"] == []
+    assert not any(row["status"] == "spent" and row["node_id"] == "video" for row in status["ledger"])
+
+
+def test_offline_image_status_keeps_provider_called_false(api, priced):
+    client, _data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    for node_id in ("script", "storyboard", "character"):
+        response = client.post(f"/api/v2/projects/{project_id}/nodes/{node_id}/run", json={})
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "done"
+    first = client.get(f"/api/v2/projects/{project_id}/status").json()
+    character = _node(first, "character")
+    assert character["status"] == "done"
+    assert character["provider_called"] is False
+    assert character["metadata"]["provider_called"] is False
+    assert character["metadata"]["result"]["provider_called"] is False
+    second = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(second, "character")["provider_called"] is False
+    assert _node(second, "character")["metadata"]["result"]["provider_called"] is False
+
+
+def test_stop_during_confirm_skips_the_quote_and_confirm_returns_409(api, priced, monkeypatch):
+    client, _data, adapter = api
+    entered = threading.Event()
+    release = threading.Event()
+
+    def runner(call):
+        if call.get("modality") == "video" or call.get("node_id") == "video":
+            entered.set()
+            assert release.wait(5)
+        return {"provider_called": False, "kind": call.get("kind")}
+
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn, runner=runner, video_adapter=adapter),
+    )
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    adapter.calls.clear()
+    box = {}
+
+    def confirm():
+        box["response"] = client.post(f"/api/v2/projects/{project_id}/nodes/video/confirm")
+
+    thread = threading.Thread(target=confirm, daemon=True)
+    thread.start()
+    assert entered.wait(5)
+    stopped = client.post(f"/api/v2/projects/{project_id}/stop")
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    response = box["response"]
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "状态已变化，请刷新"
+    assert stopped.status_code == 200, stopped.text
+    assert "video" in stopped.json()["stopped"]
+    assert adapter.calls == []
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert all(row["status"] != "quoted" for row in status["ledger"])
+    assert status["budget"]["committed"] == 0
+    assert _node(status, "video")["status"] == "failed"
+    again = client.post(f"/api/v2/projects/{project_id}/nodes/video/run", json={})
+    assert again.status_code == 200, again.text
+    assert again.json()["gate"] == "confirm"
+    assert again.json()["quote"]["max"] == 70.0
+    assert again.json()["spent"] is False
+
+
+def test_delete_refuses_a_running_node(api):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    connection = Database.connect(data)
+    try:
+        graph = DependencyGraph.from_dict(GraphStore.load(connection, project_id))
+        graph.transition("script", NodeStatus.RUNNING)
+        graph.update_metadata("script", submit_dispatched=True)
+        GraphStore.save(connection, project_id, graph.to_dict())
+    finally:
+        connection.close()
+    refused = client.delete(f"/api/v2/projects/{project_id}")
+    assert refused.status_code == 409
+    assert "不能删除" in refused.json()["detail"]
+    assert client.get(f"/api/v2/projects/{project_id}/status").status_code == 200
+
+
+def test_model_update_rejects_an_unknown_id(api, priced):
+    client, _data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    refused = client.patch(
+        f"/api/v2/projects/{project_id}/models",
+        json={"llm_model": "not-a-registered-model"},
+    )
+    assert refused.status_code == 400
+    assert "未知模型" in refused.json()["detail"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "script").get("metadata", {}).get("model_id") in (None, "")
+
+
+def test_status_answers_concurrent_reads(api):
+    client, _data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    codes = []
+
+    def read(_index):
+        response = client.get(f"/api/v2/projects/{project_id}/status")
+        codes.append(response.status_code)
+
+    threads = [threading.Thread(target=read, args=(index,)) for index in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert codes == [200] * 6

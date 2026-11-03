@@ -503,6 +503,10 @@ class _ClaimLost(Exception):
     """The submit stamp no longer matches. Do not write the node."""
 
 
+class _StopMissed(Exception):
+    """Stop did not persist. Roll the surrounding transaction back."""
+
+
 class GraphExecutor:
     """Run one node. The runner is invoked only after the gate allows it.
 
@@ -701,6 +705,8 @@ class GraphExecutor:
                         _ledger_view(quoted),
                         call_confirmed=True,
                     )
+                except _ClaimLost:
+                    raise
                 except Exception:
                     self._abandon_submit_claim(project_id, node_id)
                     raise
@@ -740,14 +746,22 @@ class GraphExecutor:
                     )
                 if self._force_new:
                     self._drop_replaced_task(project_id, graph, node_id)
-                return self._finish(
-                    project_id,
-                    graph,
-                    node_id,
-                    fields,
-                    view,
-                    call_confirmed=True,
-                )
+                try:
+                    return self._finish(
+                        project_id,
+                        graph,
+                        node_id,
+                        fields,
+                        view,
+                        call_confirmed=True,
+                    )
+                except _ClaimLost:
+                    # This attempt authorized the row. A lost claim must not
+                    # leave it quoted after stop (or another writer) won.
+                    self._skip_entry(view.get("entry_id"))
+                    raise
+            except _ClaimLost:
+                raise
             except Exception:
                 self._abandon_submit_claim(project_id, node_id)
                 raise
@@ -1526,6 +1540,19 @@ class GraphExecutor:
                 continue
             LedgerStore.update(self.conn, entry["id"], status=SKIPPED)
 
+    def _skip_entry(self, entry_id: Optional[str]) -> None:
+        """Mark one quoted row skipped. A spent or missing row is left alone."""
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            return
+        with transaction(self.conn):
+            try:
+                entry = LedgerStore.get(self.conn, entry_id)
+            except StorageError:
+                return
+            if entry.get("status") != QUOTED or entry.get("actual_amount") is not None:
+                return
+            LedgerStore.update(self.conn, entry_id, status=SKIPPED)
+
     def _run_confirmed_node(self, project_id: str, node_id: str, params: Optional[dict]) -> dict:
         result = self.run_node(project_id, node_id, params)
         if result.get("gate") == "confirm":
@@ -1648,6 +1675,9 @@ class GraphExecutor:
         for raw_id, raw_model in (node_models or {}).items():
             node_id = self._node_id(graph, raw_id)
             planned[node_id] = _required_model_id(raw_model, node_id)
+        for model_id in planned.values():
+            if ModelRegistry.get(model_id) is None:
+                raise _GateError(f"未知模型：{model_id}")
         updated: list[dict] = []
         blocked: list[dict] = []
         for node_id, model_id in planned.items():
@@ -1709,25 +1739,19 @@ class GraphExecutor:
                     }
                 )
                 continue
-            graph.transition(node_id, NodeStatus.FAILED)
-            graph.update_metadata(node_id, stop_reason="用户停止")
-            self._save(project_id, graph, owned={node_id}, resume_pause=True)
-            stored = self._load(project_id)
-            if stored.node(node_id).status != NodeStatus.FAILED:
-                refused.append(
-                    {
-                        "node_id": node_id,
-                        "reason": "停止没有写入，节点仍在运行。",
-                    }
-                )
-                continue
-            if stored.node(node_id).metadata.get("stop_reason") != "用户停止":
-                refused.append(
-                    {
-                        "node_id": node_id,
-                        "reason": "停止没有写入。",
-                    }
-                )
+            try:
+                with transaction(self.conn):
+                    graph.transition(node_id, NodeStatus.FAILED)
+                    graph.update_metadata(node_id, stop_reason="用户停止")
+                    self._save(project_id, graph, owned={node_id}, resume_pause=True)
+                    stored = self._load(project_id)
+                    if stored.node(node_id).status != NodeStatus.FAILED:
+                        raise _StopMissed()
+                    if stored.node(node_id).metadata.get("stop_reason") != "用户停止":
+                        raise _StopMissed()
+                    self._release_quoted_reservation(project_id, node_id)
+            except _StopMissed:
+                refused.append({"node_id": node_id, "reason": "停止没有写入，节点仍在运行。"})
                 continue
             stopped.append(node_id)
         if not stopped and not refused:
@@ -1747,6 +1771,13 @@ class GraphExecutor:
         public = graph.node(node_id).to_dict()
         row = self._node_state_row(project_id, node_id)
         public["node_state"] = None if row is None else row["status"]
+        meta = public.get("metadata") if isinstance(public.get("metadata"), dict) else {}
+        if meta.get("provider_called") is False:
+            public["provider_called"] = False
+        else:
+            stored = meta.get("result") if isinstance(meta, dict) else None
+            if isinstance(stored, dict) and stored.get("provider_called") is False:
+                public["provider_called"] = False
         if public.get("status") != NodeStatus.AWAITING_USER.value:
             return public
         quote_body, duration = self._status_quote(public)
@@ -1831,7 +1862,7 @@ class GraphExecutor:
                 result,
                 references,
             )
-        self._store_result(graph, node_id, result)
+        self._store_result(graph, node_id, result, provider_called=provider_called)
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
@@ -2066,10 +2097,22 @@ class GraphExecutor:
             raise _GateError("node runner called a provider")
         return result
 
-    def _store_result(self, graph: DependencyGraph, node_id: str, result: Any) -> None:
-        if not isinstance(result, dict):
-            return
-        public = {key: value for key, value in result.items() if key != "provider_called"}
+    def _store_result(
+        self,
+        graph: DependencyGraph,
+        node_id: str,
+        result: Any,
+        *,
+        provider_called: Optional[bool] = None,
+    ) -> None:
+        public = {}
+        if isinstance(result, dict):
+            public = {key: value for key, value in result.items() if key != "provider_called"}
+        # A real vendor submit stays unmarked. An offline settlement records
+        # that nothing was called, so a later status read can still say so.
+        if provider_called is False:
+            public["provider_called"] = False
+            graph.update_metadata(node_id, provider_called=False)
         if public:
             graph.update_metadata(node_id, result=public)
 
@@ -2087,7 +2130,7 @@ class GraphExecutor:
             }
         )
         self._to_done(graph, node_id)
-        self._store_result(graph, node_id, result)
+        self._store_result(graph, node_id, result, provider_called=False)
         self._save(project_id, graph)
         body = self._pack(
             project_id,

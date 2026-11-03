@@ -489,9 +489,18 @@ def api(tmp_path, client):
         app.dependency_overrides.pop(get_library_connection, None)
 
 
-def test_v2_routes_quote_confirm_raise_decline_and_status(api, priced):
+def test_v2_routes_quote_confirm_raise_decline_and_status(api, priced, monkeypatch):
     client, data = api
     assert isinstance(client, TestClient)
+
+    class _QuietAdapter:
+        def submit(self, spec, params, *, transport=None):
+            raise AssertionError("budget pause must not submit")
+
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn, video_adapter=_QuietAdapter()),
+    )
     connection = Database.connect(data)
     try:
         project = _project(connection, cap=4)
