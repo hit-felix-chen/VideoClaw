@@ -10,7 +10,8 @@ R6 persists the in-memory graph with :class:`storage.GraphStore` (the
 ``node_state`` are the relational shape from the design and are not filled
 from that JSON. R5 owns asset-library behavior on top of ``asset``, ``look``,
 ``look_version``, ``image``, ``look_selection``, and ``segment_ref``. R3 owns
-ledger behavior on top of ``ledger``.
+ledger behavior on top of ``ledger``. R7 stores look-impact confirmation
+tokens on ``impact_confirmation``.
 
 ``look.covered_json`` / ``look_version.covered_json`` (v2) record which
 description, prompt, and attribute keys the look owns. The other look columns
@@ -250,7 +251,7 @@ def _add_column(table: str, column: str, definition: str):
 class Schema:
     """Apply and inspect ``schema_version``."""
 
-    VERSION = 2
+    VERSION = 3
     ASSET_KINDS = ASSET_KINDS
     ASSET_SCOPES = ASSET_SCOPES
     IMAGE_SOURCES = IMAGE_SOURCES
@@ -269,6 +270,7 @@ class Schema:
         "node_state",
         "ledger",
         "blob",
+        "impact_confirmation",
     )
     MIGRATIONS: tuple[tuple[int, str, tuple], ...] = (
         (1, "initial_project_store", tuple(_strip(item) for item in _V1)),
@@ -278,6 +280,26 @@ class Schema:
             (
                 _add_column("look", "covered_json", "TEXT"),
                 _add_column("look_version", "covered_json", "TEXT"),
+            ),
+        ),
+        (
+            3,
+            "impact_confirmation",
+            (
+                """
+                CREATE TABLE IF NOT EXISTS impact_confirmation (
+                    token TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+                    look_id TEXT NOT NULL,
+                    asset_id TEXT,
+                    node_ids_json TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT,
+                    result_json TEXT
+                )
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_impact_confirmation_project ON impact_confirmation(project_id)",
             ),
         ),
     )

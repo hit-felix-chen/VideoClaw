@@ -36,3 +36,8 @@ class ImpactConfirmRequest(BaseModel):
     confirm_token: str
     model: Optional[str] = None
     unit_cost: Optional[float] = None
+
+
+class ImpactRegenerateRequest(NodeRunRequest):
+    confirm_token: str
+    node_ids: list[str]
