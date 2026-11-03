@@ -24,7 +24,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 并发的第二个 confirm 会 400，不会再授权、也不会再提交。
 
-没有方舟 / 百炼 / 可灵密钥，也没有注入适配器时，不打供应商，仍会把准备好的请求存进节点并花掉已保留的报价。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。
+该模型的供应商没有密钥，也没有注入适配器时，不打供应商，仍会把准备好的请求存进节点并花掉已保留的报价。执行器只把 `ark`、`dashscope`、`kling` 的 `api_key` 当成已配置。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。
 
 ## 标记
 
