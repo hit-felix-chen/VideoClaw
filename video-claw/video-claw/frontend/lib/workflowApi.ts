@@ -280,6 +280,7 @@ export async function startProject(params: {
   video_start_end_model?: string;
   video_reference_model?: string;
   video_generation_mode?: string;
+  chain_last_frame?: boolean;
   scene_number?: number;
   enable_concurrency?: boolean;
   web_search?: boolean;

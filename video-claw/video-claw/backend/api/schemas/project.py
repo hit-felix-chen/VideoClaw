@@ -19,6 +19,7 @@ class ProjectStartRequest(BaseModel):
     video_start_end_model: Optional[str] = None
     video_reference_model: Optional[str] = None
     video_generation_mode: Optional[str] = "first_frame"
+    chain_last_frame: Optional[bool] = False
     enable_concurrency: Optional[bool] = True
     web_search: Optional[bool] = False
     episodes: Optional[int] = None

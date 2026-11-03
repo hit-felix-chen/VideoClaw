@@ -32,6 +32,7 @@ export interface ProjectParams {
   video_generation_mode: VideoGenerationMode;
   expand_idea?: boolean;
   enable_concurrency?: boolean;
+  chain_last_frame?: boolean;
   web_search?: boolean;
   episodes?: number;
 }
@@ -83,6 +84,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState('');
   const [enableConcurrency, setEnableConcurrency] = useState(true);
+  const [chainLastFrame, setChainLastFrame] = useState(false);
   const [webSearch, setWebSearch] = useState(false);
   const [episodes, setEpisodes] = useState(4);
   const [showEpisodesPanel, setShowEpisodesPanel] = useState(false);
@@ -232,6 +234,7 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
       video_reference_model: selectedReferenceVideo,
       video_model: activeVideoModel,
       enable_concurrency: enableConcurrency,
+      chain_last_frame: chainLastFrame,
       web_search: webSearch,
       episodes,
     }, auto);
@@ -660,6 +663,15 @@ export default function HomePage({ onStartProject, onResumeProject, onDeleteSess
                     className="w-4 h-4 rounded border-gray-300 text-blue-500 focus:ring-blue-500/30"
                   />
                   <span className="text-gray-600">并发生成</span>
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer select-none" title="同一集内按顺序生成，下一片段首帧使用上一片段所选视频的最后一帧">
+                  <input
+                    type="checkbox"
+                    checked={chainLastFrame}
+                    onChange={e => setChainLastFrame(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-500 focus:ring-blue-500/30"
+                  />
+                  <span className="text-gray-600">尾帧接续</span>
                 </label>
                 </div>
               </div>

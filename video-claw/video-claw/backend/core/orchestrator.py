@@ -66,6 +66,7 @@ SESSION_META_KEYS = (
     "video_start_end_model",
     "video_reference_model",
     "video_generation_mode",
+    "chain_last_frame",
     "video_style",
     "enable_concurrency",
     "web_search",
@@ -717,6 +718,9 @@ class WorkflowEngine:
                     continue
                 item_id = item["id"]
                 if target_ids is not None and item_id not in target_ids:
+                    # Downstream clips are not regenerated, but they still need the stale flag.
+                    if "stale" in item and item_id in by_id:
+                        by_id[item_id]["stale"] = bool(item.get("stale"))
                     continue
                 current = by_id.get(item_id)
                 if item_id not in order:
