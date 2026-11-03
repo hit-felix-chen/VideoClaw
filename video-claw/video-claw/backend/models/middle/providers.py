@@ -100,6 +100,9 @@ class ArkVideoAdapter(_VideoAdapter):
 
     def submit(self, spec, params: dict, *, transport: Any = None) -> str:
         client = transport or self._transport()
+        task_id = params.get("vendor_task_id")
+        if isinstance(task_id, str) and task_id.strip():
+            return self._seedance(transport).resume(task_id.strip(), params.get("save_path") or "")
         return client._generate_seedance(
             params.get("prompt") or "",
             params.get("image_path"),
@@ -113,6 +116,7 @@ class ArkVideoAdapter(_VideoAdapter):
             params.get("generate_audio"),
             reference_image_paths=params.get("reference_image_paths"),
             last_image_path=params.get("last_image_path"),
+            on_task=params.get("on_task"),
         )
 
     def poll(self, spec, task_id: str, *, transport: Any = None) -> str:

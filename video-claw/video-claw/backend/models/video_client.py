@@ -352,6 +352,7 @@ class VideoClient:
         generate_audio: Optional[bool] = None,
         reference_image_paths: Optional[list[str]] = None,
         last_image_path: Optional[str] = None,
+        on_task=None,
     ) -> str:
         """通过 Seedance 模型生成视频。分辨率已由适配器归一化，不再静默降到 720p。"""
         logger.info("VideoClient routed to Seedance: model=%s", model)
@@ -368,6 +369,7 @@ class VideoClient:
             generate_audio=generate_audio,
             reference_image_paths=reference_image_paths,
             last_image_path=last_image_path,
+            on_task=on_task,
         )
 
 

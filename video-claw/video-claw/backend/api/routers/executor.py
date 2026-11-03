@@ -1,6 +1,8 @@
 """Project API for one-node runs, video confirm, and the budget gate.
 
-Routes call :class:`core.executor.GraphExecutor`. They do not call a provider.
+Routes call :class:`core.executor.GraphExecutor`. Video submit happens
+inside the executor after confirm authorizes, and only when a video
+adapter is injected or the model's provider key is configured.
 """
 
 from __future__ import annotations
