@@ -1,49 +1,34 @@
-# 上传文档生成剧本
+# 上传文件
 
-在创建视频工作流前，用户可以选择上传本地文档 (.txt, .md, .pdf, .doc, .docx) 来作为剧本素材。
+上传只负责把文件放进 `backend/code/temp`。没有接口把 `file_path` 自动写成剧本或写进图。
 
----
+## 文档
 
-## 阶段流程
-
-当你需要根据用户提供的文件来生成剧本时，分两步执行：
-
-### 1. 上传文件到服务器
-
-后端提供了一个接收文件上传的接口，将文件保存到 `temp` 目录并返回相对路径。
+`POST /api/upload_file`，表单字段名 `file`。允许 `.docx`、`.doc`、`.txt`、`.md`、`.pdf`。
 
 ```bash
-# 假设用户提供的本地文件路径为 /path/to/local/file.txt
-curl -X POST "http://localhost:8000/api/upload_file" \
+curl -X POST "http://127.0.0.1:8000/api/upload_file" \
   -F "file=@/path/to/local/file.txt"
 ```
 
-**响应体示例**：
+响应：
+
 ```json
-{
-  "filename": "file.txt",
-  "file_path": "1720392941_file.txt"
-}
+{"filename": "file.txt", "file_path": "1720392941_file.txt"}
 ```
 
-### 2. 使用上传的文件创建项目
+`file_path` 是 temp 目录下的文件名，不是绝对路径。
 
-拿到 `file_path` 后，按照 `create_project.md` 的规范调用 `/api/project/start`。此时将 `file_path` 作为参数传入：
+## 媒体
+
+`POST /api/upload_media`，字段名同样是 `file`。允许 `.jpg`、`.jpeg`、`.png`、`.webp`、`.bmp`、`.mp4`、`.mov`、`.avi`、`.mkv`、`.webm`。
+
+响应里的 `file_path` 是绝对路径，和文档上传不一样。
+
+## 清空 temp
 
 ```bash
-curl -X POST "http://localhost:8000/api/project/start" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "file_path": "1720392941_file.txt",
-    "idea": "如果用户有补充说明，填在这里；如果没有可留空",
-    "style": "anime",
-    "episodes": 4,
-    "llm_model": "deepseek-flash"
-  }'
+curl -X DELETE "http://127.0.0.1:8000/api/cache/temp"
 ```
 
----
-
-> **⚠️ 注意事项**：
-> 1. 上传的文件大小可能较大，不要尝试在终端里通过 `cat` 读取全卷内容发送给 LLM。利用后端的 `/api/project/start` 接口自带的解析功能（支持 PDF 和 Word）让后端自动处理。
-> 2. 当 `file_path` 存在时，后端会自动将其解析内容和 `idea` 内容进行拼接。
+响应含 `deleted`、`freed_bytes`、`freed_mb` 和删失败时的 `errors`。
