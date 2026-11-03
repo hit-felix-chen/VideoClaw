@@ -238,42 +238,6 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 </div>
 </details>
 
-<!-- 
-## 🧩 快速创作
-
-<details>
-<summary><b>点击查看WebUI界面设计</b></summary>
-
-| Pipeline   | 示意图                                                                            | 前端入口             | 说明                                                                                                                                                                                                   |
-| ---------- | --------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 文艺短视频 | <img src="video-claw-pics/pipeline_demo/standard.png" width="600" />        | 侧边栏「文艺短视频」 | 支持「图片拼接 / 动态视频」和「创作灵感 / 完整文案」两组模式。系统按句号切分旁白，为每个片段生成配图与语音；图片拼接模式合成图文短视频，动态视频模式继续调用图生视频模型生成片段；可选添加标题和字幕。 |
-| 动作迁移   | <img src="video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | 侧边栏「动作迁移」   | 输入参考图片、动作视频和提示词，调用支持动作迁移能力的视频模型生成结果视频。                                                                                                                           |
-| 数字人口播 | <img src="video-claw-pics/pipeline_demo/digital_human.png" width="600" />   | 侧边栏「数字人口播」 | 输入人物图和口播文案，生成分句语音与数字人视频片段；多片段生成时会使用上一段尾帧衔接下一段，并用生成语音替换最终视频音轨。                                                                             |
-
-</details>
-
-### 文艺短视频
-
-<div align="center">
-<table align="center" border="0" cellspacing="0" cellpadding="0" style="border:none; border-collapse:collapse; margin:0 auto;">
-  <tr>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/7a674bb7-6ee9-4b83-bfd3-0d880127b632" controls width="100%" preload="none"></video>
-      <br><b>▶️ 山河入梦</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/a62c8184-322d-4c06-b16f-19660766e816" controls width="100%" preload="none"></video>
-      <br><b>▶️ 人生海海</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-  </tr>
-</table>
-</div>
-
-<br>
- -->
-
 # ✨ 功能特性
 
 | 能力                                     | 说明                                                                                                            |
@@ -281,7 +245,6 @@ VideoClaw 是一个面向创意视频生产的 AI 导演系统。**你只需要�
 | 🎬**从创意到成片的全流程生成**     | 一条链路打通剧本、角色、分镜、参考图、视频片段与后期剪辑，把零散生成能力升级为完整视频生产工作流。              |
 | 🖼️**分镜驱动的可控创作**         | 通过结构化剧本、分镜规划与参考图生成，让角色一致性、镜头表达和画面风格更稳定、更可控。                          |
 | ✍️**可修改、可续写、可继续生成** | 支持剧情 / 分镜智能续写，也支持角色、参考图、视频阶段修改后重新生成，避免每次都从头开始。                       |
-| 🧩**轻量 Pipeline 任务**           | 支持解说短视频、动作迁移、数字人口播三类一次性任务，适合批量生成图文/动态短视频、动作迁移视频和口播视频。       |
 | 📲**本地部署、多端协作、产物留存** | 支持 Web 界面、微信 / 飞书协作、OpenClaw Skill 集成，并对剧本、图片、视频片段和最终成片进行全链路留存。         |
 
 ### 🎥 视频生成方式
@@ -448,7 +411,6 @@ python3 -m pytest
 
 - `api_providers` 保存各模型服务平台的密钥、接口地址和代理开关。
 - `models` 保存**主流程**首页使用的默认模型。前端创建项目时会先读取这些默认值，再把具体模型参数传给后端；后端不会再为主流程自动兜底选择模型，缺少模型参数会直接报错。
-- Pipeline（文艺短视频、动作迁移、数字人口播）不使用这里的主流程默认模型，需要在对应 Pipeline 页面单独选择模型。
 
 ## 前端设置页面
 
@@ -528,7 +490,7 @@ generation:
 | **火山方舟 ARK** | `api_providers.ark.api_key` / `base_url`                       | Seedream 图像、Seedance 视频等       |
 |    **Kling**    | `api_providers.kling.access_key` / `secret_key` / `base_url` | 可灵视频生成                         |
 
-只需要填写你实际选择模型所需的平台密钥。例如主流程默认图像模型是 `doubao-seedream-*` 时，需要配置 `ark.api_key`；默认视频模型是 `wan*` 时，需要配置 `dashscope.api_key`。如果在 Pipeline 页面选择了不同模型，也要确保对应平台的密钥已经填写。
+只需要填写你实际选择模型所需的平台密钥。例如主流程默认图像模型是 `doubao-seedream-*` 时，需要配置 `ark.api_key`；默认视频模型是 `wan*` 时，需要配置 `dashscope.api_key`。
 
 ## 可用模型
 
@@ -540,7 +502,7 @@ generation:
 |  **图生图**  | wan2.7-image, wan2.7-image-pro, doubao-seedream-5.0/4.5/4.0, gpt-image-2                                                                                                    |
 | **视频生成** | 首帧生视频：wan2.7-i2v, wan2.6-i2v-flash, doubao-seedance-2.0 (Normal/Fast), kling-v3/v2.6/v2.5；首尾帧生视频：wan2.7-i2v 等支持首尾帧输入的模型；参考图生视频：wan2.7-r2v 等支持参考图输入的模型。 |
 
-模型信息以 `video-claw/video-claw/backend/models/config_model.py` 为准。前端和 Pipeline API 会根据模型能力标签筛选模型，例如文本生成、图像生成、图生视频、动作迁移、TTS 等。
+模型信息以 `video-claw/video-claw/backend/models/config_model.py` 为准。前端会根据模型能力标签筛选模型，例如文本生成、图像生成、图生视频。
 
 </details>
 
@@ -556,16 +518,9 @@ Video-Claw 的所有任务元数据与生成产物均保存在 `video-claw/video
 ```text
 video-claw/video-claw/backend/code/
 ├── data/
-│   ├── tasks/                  # Pipeline 任务元数据 (JSON)
-│   └── sessions/               # AIGC-Claw 会话元数据 (JSON)
+│   └── sessions/               # 主流程会话元数据 (JSON)
 └── result/
-    ├── task/                   # Pipeline 生成产物 (按 Task ID 分类)
-    │   └── <task_id>/          # e.g., 20260514_204946_961f95d9
-    │       ├── audio_xx.mp3    # 分段音频
-    │       ├── video_xx.mp4    # 分段视频
-    │       ├── storyboard.json # 故事板数据
-    │       └── final.mp4       # 最终合成视频
-    ├── image/                  # AIGC-Claw 生成的图片
+    ├── image/                  # 主流程生成的图片
     │   └── <session_id>/       # 按会话 ID 分类
     │       ├── Assets/         # 角色与场景素材
     │       │   ├── characters/ # 角色参考图
@@ -578,7 +533,6 @@ video-claw/video-claw/backend/code/
 
 ## 🆔 标识说明
 
-- **Task ID**: 格式为 `YYYYMMDD_HHMMSS_随机Hash` (例如 `20260514_204946_961f95d9`)，用于唯一标识一次 Pipeline 任务。
 - **Session ID**: 毫秒级时间戳 (如 `1778810088325`)，用于关联主流程交互中的上下文数据与生成图片。
 
 </details>

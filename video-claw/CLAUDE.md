@@ -69,6 +69,7 @@ External API integrations in `video-claw/backend/models/`:
 - **Image clients**: image_dashscope.py, image_client.py (Seedream, Jimeng, Wan)
 - **Video clients**: video_dashscope.py, video_kling.py (Wan, Kling)
 - **VLM clients**: vlm_dashscope.py, vlm_gemini.py
+- **TTS**: `models/tts_edge.py` (`EdgeTts`) is the edge-tts client. The `edge-tts` dependency stays in `pyproject.toml` and `requirements.txt`. R1 wraps this client as the first `tts` modality provider; do not drop the dependency before that.
 
 ### Data Storage
 - Results: `video-claw/backend/code/result/` (image/, video/, script/)

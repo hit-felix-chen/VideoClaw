@@ -234,42 +234,6 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 </div>
 </details>
 
-<!-- 
-## 🧩 Quick Creation
-
-<details>
-<summary><b>Click to view WebUI UI design</b></summary>
-
-| Pipeline | Demo | Frontend Entry | Description |
-|---|---|---|---|
-| Artistic Short Video | <img src="video-claw-pics/pipeline_demo/standard.png" width="600" /> | Sidebar: "Artistic Short Video" | Supports both "Image Montage / Dynamic Video" and "Creative Inspiration / Full Script" modes. The system splits narration by periods, generates an image and voiceover for each segment, then either composes image-based clips or calls an image-to-video model for dynamic segments. Optional title and subtitles are supported. |
-| Action Transfer | <img src="video-claw-pics/pipeline_demo/action_transfer.png" width="600" /> | Sidebar: "Action Transfer" | Takes a reference image, an action video, and a prompt, then calls a video model with action-transfer capability to generate the result video. |
-| Digital Human Talking Video | <img src="video-claw-pics/pipeline_demo/digital_human.png" width="600" /> | Sidebar: "Digital Human Talking Video" | Takes a character image and talking script, generates sentence-level speech and digital human video clips, uses the previous clip's tail frame to continue multi-clip generation, and replaces the final video audio with the generated speech. |
-
-</details>
-
-### Artistic Short Video
-
-<div align="center">
-<table align="center" border="0" cellspacing="0" cellpadding="0" style="border:none; border-collapse:collapse; margin:0 auto;">
-  <tr>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/7a674bb7-6ee9-4b83-bfd3-0d880127b632" controls width="100%" preload="none"></video>
-      <br><b>▶️ Mountain and River Dreams</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;">
-      <video src="https://github.com/user-attachments/assets/a62c8184-322d-4c06-b16f-19660766e816" controls width="100%" preload="none"></video>
-      <br><b>▶️ The Vastness of Life</b>
-    </td>
-    <td align="center" valign="top" width="25%" style="border:none;"></td>
-  </tr>
-</table>
-</div>
-
-<br>
- -->
-
 # ✨ Features
 
 | Capability | Description |
@@ -277,7 +241,6 @@ It is not a one-shot text-to-video tool. It is a full production line covering *
 | 🎬 **End-to-end generation from idea to final cut** | Connects scripts, characters, storyboards, reference images, video clips, and post-production into one complete workflow, upgrading scattered generation abilities into a full video production pipeline. |
 | 🖼️ **Storyboard-driven controllable creation** | Uses structured scripts, storyboard planning, and reference image generation to make character consistency, shot expression, and visual style more stable and controllable. |
 | ✍️ **Editable, continuable, and regenerable** | Supports intelligent continuation of plots and storyboards, while also allowing character, reference image, and video stages to be edited and regenerated without starting from scratch. |
-| 🧩 **Lightweight Pipeline tasks** | Supports three one-shot tasks: commentary-style short videos, action transfer, and digital human talking videos. They are suitable for batch generation of image/text or dynamic short videos, action-transfer videos, and talking-head videos. |
 | 📲 **Local deployment, multi-platform collaboration, and asset retention** | Supports Web UI, WeChat / Feishu collaboration, OpenClaw Skill integration, and full-chain retention of scripts, images, video clips, and final outputs. |
 
 ---
@@ -434,7 +397,6 @@ Backend configuration is stored in `video-claw/backend/config.yaml` using a lowe
 
 - `api_providers` stores API keys, base URLs, and proxy toggles for each model provider.
 - `models` stores default models for the **main workflow** home page. When creating a project, the frontend reads these defaults first and sends the concrete model parameters to the backend. The backend no longer silently chooses fallback models for the main workflow; missing model parameters will return an error.
-- Pipelines (Artistic Short Video, Action Transfer, and Digital Human Talking Video) do not use these main-workflow defaults. Choose their models separately on each Pipeline page.
 
 ## Frontend Settings Page
 
@@ -505,7 +467,7 @@ models:
 | **Volcengine ARK** | `api_providers.ark.api_key` / `base_url` | Seedream image models and Seedance video models |
 | **Kling** | `api_providers.kling.access_key` / `secret_key` / `base_url` | Kling video generation |
 
-You only need to fill in the provider keys required by the models you choose. For example, if the main workflow uses a `doubao-seedream-*` image model, configure `ark.api_key`; if it uses a `wan*` video model, configure `dashscope.api_key`. If you choose different models on a Pipeline page, make sure the corresponding provider key is also configured.
+You only need to fill in the provider keys required by the models you choose. For example, if the main workflow uses a `doubao-seedream-*` image model, configure `ark.api_key`; if it uses a `wan*` video model, configure `dashscope.api_key`.
 
 ## Available Models
 
@@ -517,7 +479,7 @@ You only need to fill in the provider keys required by the models you choose. Fo
 | **Image-to-Image** | wan2.7-image, wan2.7-image-pro, doubao-seedream-5.0/4.5/4.0, gpt-image-2 |
 | **Video Generation** | wan2.7-i2v, wan2.6-i2v-flash, doubao-seedance-2.0 (Normal/Fast), kling-v3/v2.6/v2.5 |
 
-Model information is defined in `video-claw/video-claw/backend/models/config_model.py`. The frontend and Pipeline APIs filter models by capability tags, such as text generation, image generation, image-to-video, action transfer, and TTS.
+Model information is defined in `video-claw/video-claw/backend/models/config_model.py`. The frontend filters models by capability tags, such as text generation, image generation, and image-to-video.
 
 </details>
 
@@ -534,16 +496,9 @@ All tasks metadata and generated artifacts are stored under `video-claw/video-cl
 ```text
 video-claw/video-claw/backend/code/
 ├── data/
-│   ├── tasks/                  # Pipeline task metadata (JSON)
-│   └── sessions/               # AIGC-Claw session metadata (JSON)
+│   └── sessions/               # Main-workflow session metadata (JSON)
 └── result/
-    ├── task/                   # Pipeline generated artifacts (by Task ID)
-    │   └── <task_id>/          # e.g., 20260514_204946_961f95d9
-    │       ├── audio_xx.mp3    # Audio segments
-    │       ├── video_xx.mp4    # Video segments
-    │       ├── storyboard.json # Storyboard data
-    │       └── final.mp4       # Final combined video
-    ├── image/                  # AIGC-Claw generated images
+    ├── image/                  # Main-workflow generated images
     │   └── <session_id>/       # By Session ID
     │       ├── Assets/         # Character and setting assets
     │       │   ├── characters/ # Character reference images
@@ -556,7 +511,6 @@ video-claw/video-claw/backend/code/
 
 ## 🆔 Identifiers
 
-- **Task ID**: Format: `YYYYMMDD_HHMMSS_RandomHash` (e.g., `20260514_204946_961f95d9`), used to uniquely identify a Pipeline task.
 - **Session ID**: Millisecond-level timestamp (e.g., `1778810088325`), used to associate interaction context and generated images in the main workflow.
 
 </details>
