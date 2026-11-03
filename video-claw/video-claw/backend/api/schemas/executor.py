@@ -27,6 +27,40 @@ class BudgetRaiseRequest(BaseModel):
     budget_cap: float
 
 
+class EpisodeProjectCreate(BaseModel):
+    name: str
+    budget_cap: Optional[float] = None
+    idea: Optional[str] = None
+    llm_model: Optional[str] = None
+    image_model: Optional[str] = None
+    video_model: Optional[str] = None
+    tts_model: Optional[str] = None
+
+
+class ModelUpdateRequest(BaseModel):
+    llm_model: Optional[str] = None
+    image_model: Optional[str] = None
+    video_model: Optional[str] = None
+    tts_model: Optional[str] = None
+    nodes: Optional[dict[str, str]] = None
+
+
+class PromptUpdateRequest(BaseModel):
+    text: str
+
+
+class ConfirmRequest(BaseModel):
+    """Plain confirm. ``force_new`` is rejected by the route."""
+
+    force_new: bool = False
+
+
+class RetryVideoSubmitRequest(BaseModel):
+    """Manual retry. ``force_new`` defaults to false."""
+
+    force_new: bool = False
+
+
 class ImpactRequest(BaseModel):
     model: Optional[str] = None
     unit_cost: Optional[float] = None
