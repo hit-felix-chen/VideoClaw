@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import app
-from api.routers.library import get_library_connection
+from api.routers.library import get_library_connection, use_data_dir
 from core.executor import GraphExecutor
 from graph.dependency_graph import DependencyGraph
 from graph.model import NodeStatus
@@ -482,23 +482,25 @@ def test_look_impact_uses_price_book_and_confirm_does_not_spend_or_rerun(conn, p
 def api(tmp_path, client):
     data = tmp_path / "api"
 
-    def override():
-        connection = Database.connect(data)
-        try:
-            yield connection
-        finally:
-            connection.close()
-
-    app.dependency_overrides[get_library_connection] = override
+    app.dependency_overrides[get_library_connection] = use_data_dir(data)
     try:
         yield client, data
     finally:
         app.dependency_overrides.pop(get_library_connection, None)
 
 
-def test_v2_routes_quote_confirm_raise_decline_and_status(api, priced):
+def test_v2_routes_quote_confirm_raise_decline_and_status(api, priced, monkeypatch):
     client, data = api
     assert isinstance(client, TestClient)
+
+    class _QuietAdapter:
+        def submit(self, spec, params, *, transport=None):
+            raise AssertionError("budget pause must not submit")
+
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn, video_adapter=_QuietAdapter()),
+    )
     connection = Database.connect(data)
     try:
         project = _project(connection, cap=4)

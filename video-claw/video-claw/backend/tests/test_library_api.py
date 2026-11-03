@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import app
-from api.routers.library import get_library_connection
+from api.routers.library import get_library_connection, use_data_dir
 from storage import Database
 
 
@@ -12,14 +12,7 @@ from storage import Database
 def library(tmp_path, client):
     data = tmp_path / "library"
 
-    def override():
-        conn = Database.connect(data)
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-    app.dependency_overrides[get_library_connection] = override
+    app.dependency_overrides[get_library_connection] = use_data_dir(data)
     try:
         yield client
     finally:

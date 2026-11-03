@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import app
-from api.routers.library import get_library_connection
+from api.routers.library import get_library_connection, use_data_dir
 from core.executor import GraphExecutor
 from graph.dependency_graph import DependencyGraph
 from graph.model import NodeStatus
@@ -631,14 +631,7 @@ def test_impact_token_ttl_is_1800_seconds(opened, priced):
 def api(tmp_path, client):
     data = tmp_path / "api"
 
-    def override():
-        connection = Database.connect(data)
-        try:
-            yield connection
-        finally:
-            connection.close()
-
-    app.dependency_overrides[get_library_connection] = override
+    app.dependency_overrides[get_library_connection] = use_data_dir(data)
     try:
         yield client, data
     finally:

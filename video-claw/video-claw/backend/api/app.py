@@ -33,6 +33,15 @@ from api.routers import (
 async def lifespan(app: FastAPI):
     logger.info("Starting Video-Claw API")
     logger.info("Code directory mounted at /code: %s", settings.CODE_DIR)
+    from core.executor import GraphExecutor
+    from storage.database import Database
+
+    conn = Database.connect()
+    try:
+        released = GraphExecutor.recover_stale_submit_claims(conn)
+    finally:
+        conn.close()
+    logger.info("Recovered stale video submit claims: %s", len(released))
     yield
     logger.info("Video-Claw API shutdown complete")
 

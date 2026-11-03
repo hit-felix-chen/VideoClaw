@@ -116,6 +116,12 @@ from storage.staleness import RegenerationQuote
 _VIDEO = frozenset({"shot_segment", "draft_video", "final_video", "segment", "video"})
 _IMAGE = frozenset({"character", "scene", "setting", "keyframe", "image"})
 _NAMED = frozenset({"video", "image", "vlm", "tts"})
+_MODEL_ROLES = {
+    "llm_model": frozenset({"script", "storyboard", "previz"}),
+    "image_model": _IMAGE,
+    "video_model": _VIDEO,
+    "tts_model": frozenset({"tts"}),
+}
 _BUDGET_ONLY = frozenset({"image", "vlm", "tts"})
 _STRUCTURAL = frozenset({"script", "storyboard", "previz"})
 _OPEN = frozenset({NodeStatus.PENDING, NodeStatus.STALE, NodeStatus.FAILED})
@@ -392,6 +398,12 @@ def _force_new_pending(node) -> bool:
     return bool(_metadata(node).get("force_new_pending"))
 
 
+def _required_model_id(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise _GateError(f"{label} must be a non-empty string")
+    return value.strip()
+
+
 def _request_was_not_sent(exc: BaseException) -> bool:
     """True when the vendor cannot have accepted a generation."""
     if isinstance(exc, FileNotFoundError):
@@ -489,6 +501,10 @@ class _SaveRejected(Exception):
 
 class _ClaimLost(Exception):
     """The submit stamp no longer matches. Do not write the node."""
+
+
+class _StopMissed(Exception):
+    """Stop did not persist. Roll the surrounding transaction back."""
 
 
 class GraphExecutor:
@@ -689,6 +705,8 @@ class GraphExecutor:
                         _ledger_view(quoted),
                         call_confirmed=True,
                     )
+                except _ClaimLost:
+                    raise
                 except Exception:
                     self._abandon_submit_claim(project_id, node_id)
                     raise
@@ -728,14 +746,22 @@ class GraphExecutor:
                     )
                 if self._force_new:
                     self._drop_replaced_task(project_id, graph, node_id)
-                return self._finish(
-                    project_id,
-                    graph,
-                    node_id,
-                    fields,
-                    view,
-                    call_confirmed=True,
-                )
+                try:
+                    return self._finish(
+                        project_id,
+                        graph,
+                        node_id,
+                        fields,
+                        view,
+                        call_confirmed=True,
+                    )
+                except _ClaimLost:
+                    # This attempt authorized the row. A lost claim must not
+                    # leave it quoted after stop (or another writer) won.
+                    self._skip_entry(view.get("entry_id"))
+                    raise
+            except _ClaimLost:
+                raise
             except Exception:
                 self._abandon_submit_claim(project_id, node_id)
                 raise
@@ -1514,6 +1540,19 @@ class GraphExecutor:
                 continue
             LedgerStore.update(self.conn, entry["id"], status=SKIPPED)
 
+    def _skip_entry(self, entry_id: Optional[str]) -> None:
+        """Mark one quoted row skipped. A spent or missing row is left alone."""
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            return
+        with transaction(self.conn):
+            try:
+                entry = LedgerStore.get(self.conn, entry_id)
+            except StorageError:
+                return
+            if entry.get("status") != QUOTED or entry.get("actual_amount") is not None:
+                return
+            LedgerStore.update(self.conn, entry_id, status=SKIPPED)
+
     def _run_confirmed_node(self, project_id: str, node_id: str, params: Optional[dict]) -> dict:
         result = self.run_node(project_id, node_id, params)
         if result.get("gate") == "confirm":
@@ -1555,12 +1594,18 @@ class GraphExecutor:
         ProjectStore.open(self.conn, project_id)
         document = GraphStore.load(self.conn, project_id)
         nodes: list[dict] = []
+        edges: list[dict] = []
         awaiting: list[str] = []
         executable: list[str] = []
         stale: list[str] = []
         if isinstance(document, dict) and "nodes" in document:
             graph = DependencyGraph.from_dict(document)
-            nodes = [graph.node(node_id).to_dict() for node_id in graph.topological_order()]
+            nodes = [
+                self._status_node(project_id, graph, node_id)
+                for node_id in graph.topological_order()
+            ]
+            raw_edges = graph.to_dict().get("edges")
+            edges = list(raw_edges) if isinstance(raw_edges, list) else []
             awaiting = graph.pending_confirmations()
             executable = graph.executable_nodes()
             stale = graph.stale_nodes()
@@ -1569,10 +1614,212 @@ class GraphExecutor:
             "budget": ProjectBudget.budget_status(self.conn, project_id),
             "ledger": LedgerStore.list(self.conn, project_id),
             "nodes": nodes,
+            "edges": edges,
             "awaiting_user": awaiting,
             "executable": executable,
             "stale": stale,
         }
+
+    def update_prompt(self, project_id: str, node_id: str, text: str) -> dict:
+        """Store prompt text on the node. A reload of ``status`` returns it."""
+        if not isinstance(text, str):
+            raise _GateError("text must be a string")
+        graph = self._load(project_id)
+        node_id = self._node_id(graph, node_id)
+        self._reject_if_submitting(project_id, node_id)
+        graph.update_metadata(node_id, text=text)
+        pending = graph.node(node_id).metadata.get("pending_call")
+        if isinstance(pending, dict):
+            held = dict(pending)
+            held["text"] = text
+            graph.update_metadata(node_id, pending_call=held)
+        self._write_edits(project_id, graph, [node_id])
+        stored = self._load(project_id).node(node_id)
+        saved = stored.metadata.get("text")
+        if saved != text:
+            raise _GateError("提示词没有写入")
+        if isinstance(stored.metadata.get("pending_call"), dict):
+            if stored.metadata["pending_call"].get("text") != text:
+                raise _GateError("提示词没有写入待确认的调用")
+        return {
+            "project_id": project_id,
+            "node_id": node_id,
+            "text": saved,
+            "status": stored.status.value,
+        }
+
+    def update_models(
+        self,
+        project_id: str,
+        updates: dict,
+        node_models: Optional[dict] = None,
+    ) -> dict:
+        """Persist model ids onto matching nodes. Running or held nodes are left unchanged."""
+        graph = self._load(project_id)
+        planned: dict[str, str] = {}
+        unapplied: list[str] = []
+        for role, kinds in _MODEL_ROLES.items():
+            if role not in updates:
+                continue
+            model_id = _required_model_id(updates.get(role), role)
+            matched = [
+                node_id
+                for node_id in graph.topological_order()
+                if graph.node(node_id).kind in kinds
+            ]
+            if not matched:
+                unapplied.append(role)
+                continue
+            for node_id in matched:
+                planned[node_id] = model_id
+        for raw_id, raw_model in (node_models or {}).items():
+            node_id = self._node_id(graph, raw_id)
+            planned[node_id] = _required_model_id(raw_model, node_id)
+        for model_id in planned.values():
+            if ModelRegistry.get(model_id) is None:
+                raise _GateError(f"未知模型：{model_id}")
+        updated: list[dict] = []
+        blocked: list[dict] = []
+        for node_id, model_id in planned.items():
+            node = graph.node(node_id)
+            if node.status in {NodeStatus.RUNNING, NodeStatus.AWAITING_USER} or _vendor_hold(node):
+                blocked.append(
+                    {
+                        "node_id": node_id,
+                        "reason": "节点正在运行、等待确认，或仍保留着厂商任务，模型没有更换",
+                    }
+                )
+                continue
+            graph.update_metadata(node_id, model_id=model_id)
+            updated.append({"node_id": node_id, "model_id": model_id})
+        if updated:
+            self._write_edits(project_id, graph, [item["node_id"] for item in updated])
+            stored = self._load(project_id)
+            for item in updated:
+                saved = stored.node(item["node_id"]).metadata.get("model_id")
+                if saved != item["model_id"]:
+                    raise _GateError(f"模型没有写入节点 {item['node_id']}")
+        if not updated:
+            reason = "模型没有更新"
+            if blocked:
+                reason = "；".join(item["reason"] for item in blocked)
+            elif unapplied:
+                reason = "没有对应节点可写入：" + "、".join(unapplied)
+            raise _GateError(reason)
+        return {
+            "project_id": project_id,
+            "updated": updated,
+            "blocked": blocked,
+            "unapplied": unapplied,
+        }
+
+    def stop(self, project_id: str) -> dict:
+        """Stop nodes that are running locally and have not reached a vendor.
+
+        A node that already has ``submit_dispatched`` or ``vendor_task_id``
+        stays as it is. This does not report those nodes as stopped.
+        """
+        graph = self._load(project_id)
+        running_ids = [
+            node_id
+            for node_id in graph.topological_order()
+            if graph.node(node_id).status == NodeStatus.RUNNING
+        ]
+        stopped: list[str] = []
+        refused: list[dict] = []
+        for node_id in running_ids:
+            graph = self._load(project_id)
+            if node_id not in graph or graph.node(node_id).status != NodeStatus.RUNNING:
+                continue
+            if _vendor_hold(graph.node(node_id)):
+                refused.append(
+                    {
+                        "node_id": node_id,
+                        "reason": "生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。",
+                    }
+                )
+                continue
+            try:
+                with transaction(self.conn):
+                    graph.transition(node_id, NodeStatus.FAILED)
+                    graph.update_metadata(node_id, stop_reason="用户停止")
+                    self._save(project_id, graph, owned={node_id}, resume_pause=True)
+                    stored = self._load(project_id)
+                    if stored.node(node_id).status != NodeStatus.FAILED:
+                        raise _StopMissed()
+                    if stored.node(node_id).metadata.get("stop_reason") != "用户停止":
+                        raise _StopMissed()
+                    self._release_quoted_reservation(project_id, node_id)
+            except _StopMissed:
+                refused.append({"node_id": node_id, "reason": "停止没有写入，节点仍在运行。"})
+                continue
+            stopped.append(node_id)
+        if not stopped and not refused:
+            message = "当前没有正在运行的节点"
+        elif refused and not stopped:
+            message = "没有节点被停止"
+        else:
+            message = "已停止仍在本地运行、且尚未发给厂商的节点"
+        return {
+            "project_id": project_id,
+            "stopped": stopped,
+            "refused": refused,
+            "message": message,
+        }
+
+    def _status_node(self, project_id: str, graph: DependencyGraph, node_id: str) -> dict:
+        public = graph.node(node_id).to_dict()
+        row = self._node_state_row(project_id, node_id)
+        public["node_state"] = None if row is None else row["status"]
+        meta = public.get("metadata") if isinstance(public.get("metadata"), dict) else {}
+        if meta.get("provider_called") is False:
+            public["provider_called"] = False
+        else:
+            stored = meta.get("result") if isinstance(meta, dict) else None
+            if isinstance(stored, dict) and stored.get("provider_called") is False:
+                public["provider_called"] = False
+        if public.get("status") != NodeStatus.AWAITING_USER.value:
+            return public
+        quote_body, duration = self._status_quote(public)
+        if quote_body is not None:
+            public["quote"] = quote_body
+        if duration is not None:
+            public["duration"] = duration
+        entry = self._awaiting_entry(project_id, node_id)
+        if entry is not None:
+            public["entry_id"] = entry["id"]
+            public["budget_hold"] = True
+        return public
+
+    def _status_quote(self, public: dict) -> tuple[Optional[dict], Optional[dict]]:
+        meta = public.get("metadata") if isinstance(public.get("metadata"), dict) else {}
+        pending = meta.get("pending_call") if isinstance(meta, dict) else None
+        kind = public.get("kind")
+        modality = pending.get("modality") if isinstance(pending, dict) else None
+        if modality != "video" and kind not in _VIDEO:
+            return None, None
+        if not isinstance(pending, dict):
+            return None, None
+        try:
+            request, duration, _quantity = self._request(pending)
+            priced = quote(request)
+        except Exception:
+            return None, None
+        if not isinstance(priced, dict):
+            return None, None
+        return priced, duration if isinstance(duration, dict) else None
+
+    def _reject_if_submitting(self, project_id: str, node_id: str) -> None:
+        row = self._node_state_row(project_id, node_id)
+        if row is not None and row["status"] == NodeStatus.RUNNING.value:
+            raise _GateError("节点正在运行，修改没有写入")
+        if self._load(project_id).node(node_id).status == NodeStatus.RUNNING:
+            raise _GateError("节点正在运行，修改没有写入")
+
+    def _write_edits(self, project_id: str, graph: DependencyGraph, node_ids: list[str]) -> None:
+        for node_id in node_ids:
+            self._reject_if_submitting(project_id, node_id)
+        self._save(project_id, graph, owned=set(node_ids), resume_pause=True)
 
     def _finish(
         self,
@@ -1615,7 +1862,7 @@ class GraphExecutor:
                 result,
                 references,
             )
-        self._store_result(graph, node_id, result)
+        self._store_result(graph, node_id, result, provider_called=provider_called)
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
@@ -1850,10 +2097,22 @@ class GraphExecutor:
             raise _GateError("node runner called a provider")
         return result
 
-    def _store_result(self, graph: DependencyGraph, node_id: str, result: Any) -> None:
-        if not isinstance(result, dict):
-            return
-        public = {key: value for key, value in result.items() if key != "provider_called"}
+    def _store_result(
+        self,
+        graph: DependencyGraph,
+        node_id: str,
+        result: Any,
+        *,
+        provider_called: Optional[bool] = None,
+    ) -> None:
+        public = {}
+        if isinstance(result, dict):
+            public = {key: value for key, value in result.items() if key != "provider_called"}
+        # A real vendor submit stays unmarked. An offline settlement records
+        # that nothing was called, so a later status read can still say so.
+        if provider_called is False:
+            public["provider_called"] = False
+            graph.update_metadata(node_id, provider_called=False)
         if public:
             graph.update_metadata(node_id, result=public)
 
@@ -1871,7 +2130,7 @@ class GraphExecutor:
             }
         )
         self._to_done(graph, node_id)
-        self._store_result(graph, node_id, result)
+        self._store_result(graph, node_id, result, provider_called=False)
         self._save(project_id, graph)
         body = self._pack(
             project_id,
@@ -1901,7 +2160,7 @@ class GraphExecutor:
         elif modality == "image" and asset_count is None:
             asset_count = 1
         else:
-            quantity = params.get("quantity")
+            quantity = _stored(params, node.metadata, "quantity")
         asset_id = params.get("asset_id") or node.metadata.get("asset_id")
         look_id = params.get("look_id") or node.metadata.get("look_id")
         return {
@@ -1911,7 +2170,7 @@ class GraphExecutor:
             "includes_video_input": _stored(params, node.metadata, "includes_video_input"),
             "asset_count": asset_count,
             "quantity": quantity,
-            "unit": params.get("unit"),
+            "unit": _stored(params, node.metadata, "unit"),
             "completion_tokens": _stored(params, node.metadata, "completion_tokens"),
             "input_tokens": _stored(params, node.metadata, "input_tokens"),
             "output_tokens": _stored(params, node.metadata, "output_tokens"),
