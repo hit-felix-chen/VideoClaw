@@ -96,13 +96,13 @@ Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 aut
 
 ## 视频提交失败时
 
-HTTP 的视频 `confirm`、`retry_video_submit` 和 `raise` 在没有注入适配器且供应商密钥为空时是 409：`未配置视频厂商密钥，不会提交也不会入账`。不写标记，也不入账。进程内直接 `GraphExecutor.confirm` 没有这道 409，无适配器时仍按 `quote.max` 入账。
+视频 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在没有注入适配器且供应商密钥为空时是 409：`未配置视频厂商密钥，不会提交也不会入账`。不写标记，也不入账。进程内是同一个检查（`_require_video_vendor`），默认也拒绝。只有 `GraphExecutor(..., allow_offline_video=True)` 才按 `quote.max` 入账且 `provider_called` 为 false。图像、VLM、TTS 不受这道拒绝影响。
 
 普通 `confirm` 在 `submit_dispatched` 已经写上时不会再次 POST。标记只有在 `submit` 已经开始、随后又被判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是上面的 HTTP 409。这时报价改为 `skipped`。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
 
 手动重试是 `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`。省略请求体是续接。`force_new` 按 Pydantic 的 `bool` 解析：JSON `true`、`1`，以及 `"true"` / `"True"` / `"yes"` / `"on"` / `"1"` / `"y"` / `"t"`（大小写不限）才释放旧报价并重新授权、然后新开；JSON `false`、`0`，以及 `"false"` / `"no"` / `"off"` / `"0"` / `"n"` / `"f"` 仍是续接。`null` 是 422。前端送布尔值。`confirm` 里出现 `force_new` 一律 400。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。进程启动会回收过期认领；没有过期行时再启动一次是空操作。细节见 confirm_video.md。
 
-`impact/confirm` 和 `impact/regenerate` 在无密钥时仍会入账，界面可显示「已记账·未调用厂商」。`POST /api/sandbox/video` 不走项目预算。一集图是固定的 `ep1`。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。
+`impact/confirm` 和 `impact/regenerate` 在无密钥时对视频节点同样 409，令牌不占用。图像节点自己的 `run` 仍入账，界面可显示「已记账·未调用厂商」。确认失败后前端会重新拉 status。`POST /api/sandbox/video` 不走项目预算。一集图是固定的 `ep1`。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。认领比较失败且节点仍是 `running`、又没有厂商标记时，会写回 `awaiting_user` 并释放报价，不用等 30 分钟。
 
 ---
 
