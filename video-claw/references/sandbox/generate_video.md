@@ -1,71 +1,42 @@
-# 视频生成
+# 临时工作台视频
 
-使用图片或文字生成视频片段（15秒以内）。
+`POST /api/sandbox/video` 直接调用 `VideoClient`。不报价、不确认、不进项目账本，也不使用图执行器那条 4–30 秒的时长规则。
 
 ## 请求
 
+`model` 与 `prompt` 必填。处理函数不填默认模型，也不会改成 `wan2.7-i2v`。示例用已注册的 `wan2.6-i2v-flash`。
+
 ```bash
-curl -X POST "http://localhost:8000/api/sandbox/video" \
+curl -X POST "http://127.0.0.1:8000/api/sandbox/video" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "wan2.6-i2v-flash",
-    "prompt": "一只猫在草地上奔跑",
-    "image": "code/result/image/user_upload/cat.png"
+    "prompt": "一只猫在草地上奔跑"
   }'
 ```
 
-## 参数说明
-
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| model | | 模型，默认 wan2.6-i2v-flash |
-| prompt | ✅ | 视频描述 |
-| image | ✅ | 参考图片路径 |
-
-## 可用模型
-
-| 模型 | 说明 |
-|------|------|
-| wan2.6-i2v-flash | 默认，最快 |
-| wan2.6-i2v | |
-| kling-v3 | |
-| kling-v2-6 | |
-| jimeng_ti2v_v30_pro | |
-
-## ⚠️ 路径格式
-
-- `image` 必须使用 `code/result/...` 格式的**相对路径**
-- 禁止使用完整 URL 或本地路径
+| 字段 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| model | 是 | 无 | 传给 `VideoClient.generate_video` 的模型 id |
+| prompt | 是 | 无 | 提示词 |
+| image | 否 | null | 省略或 null 时，客户端收到的 `image_path` 是空字符串 |
+| ratio | 否 | `16:9` | |
+| resolution | 否 | `720P` | |
+| duration | 否 | `5` | 整数秒，原样交给客户端。不是 Seedance 2.5 的 4–30 |
 
 ## 响应
+
+成功：
 
 ```json
 {
   "success": true,
-  "video_path": "code/result/sandbox/videos/xxx.mp4",
-  "record_id": "xxx"
+  "result": "",
+  "video_path": "",
+  "record_id": ""
 }
 ```
 
-## 获取视频文件
+`video_path` 是挂在 `/code` 下的相对路径，文件在 `code/result/sandbox/videos/`。失败时 HTTP 仍可能是 200，体为 `{"success": false, "error": "..."}`。
 
-```python
-# 直接从后端目录复制
-backend_path = "/code/result/sandbox/videos/{record_id}.mp4"
-local_path = "~/.openclaw/workspace/temp_imgs/{record_id}.mp4"
-shutil.copy2(backend_path, local_path)
-```
-
-## 注意事项
-
-1. 生成的视频较短（15秒以内）
-2. 如果需要生成长视频，请使用完整工作流
-
-## 常见问题
-
-| 错误 | 原因 | 解决方法 |
-|------|------|----------|
-| `curl: (7) Failed to connect` | 后端未运行 | 启动后端服务 |
-| `404 Not Found` | 路径格式错误 | 使用 `code/result/...` 格式 |
-| `"error": "image not found"` | 图片文件不存在 | 检查图片路径是否正确 |
-| `"success": false` | API Key 额度用完或无效 | 检查对应平台的 API Key |
+可选模型以 `GET /api/models?media_type=video` 为准，不要用这份旧清单里没注册的 id。

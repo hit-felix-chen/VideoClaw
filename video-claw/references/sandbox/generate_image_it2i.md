@@ -1,3 +1,5 @@
+> **已废弃，仅历史。** 请求体和响应以 `video-claw/backend/docs/api.md` 的 `POST /api/sandbox/i2i` 为准。下面的模型名和响应字段不是当前路由。
+
 # 图生图 (I2I)
 
 使用图片生成图片（风格转换）。

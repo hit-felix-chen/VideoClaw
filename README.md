@@ -39,6 +39,8 @@
 
 </div>
 
+> **六阶段产品描述已废弃，仅历史。** 本仓库当前后端是资产依赖图（`GraphExecutor.run_node`），不是「剧本 → 角色 → 分镜 → 参考图 → 视频 → 后期」流水线，也没有 `/api/project`。下面的介绍、阶段表和目录树里的 session 布局仍是旧产品说明。现行接口见 `video-claw/video-claw/backend/docs/api.md`。
+
 # 💥 News
 
 - `2026/3/27`: 🎬 VideoClaw 正式发布，支持从想法到视频生成全流程自动化，用户可随时介入调整。

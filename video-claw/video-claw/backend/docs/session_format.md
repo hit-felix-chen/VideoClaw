@@ -1,3 +1,5 @@
+> **已废弃，仅历史。** 当前后端不读写 `code/data/sessions/{session_id}.json`，也没有六阶段 `current_stage`。项目在 `backend/code/data/videoclaw.db`，图在 `project.graph_json`。下面的字段表只描述旧会话文件。
+
 # Session 数据格式
 
 Session 数据存储在 `code/data/sessions/{session_id}.json`，包含完整的项目会话信息。
