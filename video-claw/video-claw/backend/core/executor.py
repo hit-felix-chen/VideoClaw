@@ -11,6 +11,25 @@ ask for a per-call confirm. Over budget pauses; raising the cap continues
 the same quote; declining skips it. Regenerating one node reruns only that
 node and leaves its successors stale.
 
+A video confirm that ``ProjectBudget.authorize`` accepts then submits.
+The node runner prepares the Seedance request. Submit uses the video
+adapter passed into ``GraphExecutor`` when tests inject one, otherwise the
+registry adapter for that model when its provider key is configured.
+Seedance 2.5 (``doubao-seedance-2-5-260628``) resolves to
+``ArkVideoAdapter``, which reads ``ARK_API_KEY`` /
+``api_providers.ark.api_key``. Duration on that request is the shot length
+when it sits inside the model's verified range. Seedance 2.5 allows 4 to
+30 seconds, or -1 when the model allows auto. The node is marked done and
+the reserved quote is spent only after ``submit`` returns a result id or
+path. ``ArkVideoAdapter.submit`` already waits for the asset and returns
+that path, matching its existing contract, so the executor does not poll a
+second time. If ``submit`` raises or returns nothing, the reserved quote is
+marked skipped, the same release an impact regenerate uses for a runner
+failure. The node stays awaiting the user, ``submit_error`` is stored on
+it, and the error is raised. No spent row is written. With no injected
+adapter and no provider key, the runner's prepared request is still stored
+and spent, which is the dispatcher path the existing suite drives.
+
 Confirming a look impact is the path that does rerun the confirmed
 downstream set. Each of those nodes goes through ``run_node``. A video node
 then ``confirm``s, which authorizes the quote and writes the ledger. Image,
@@ -33,7 +52,7 @@ ledger row. Image, VLM, and TTS still reserve immediately.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from graph.dependency_graph import DependencyGraph
 from graph.model import NodeStatus
@@ -153,12 +172,108 @@ def _execution_summary(nodes: list[dict], *, halted: bool = False) -> dict:
     }
 
 
-class GraphExecutor:
-    """Run one node. The runner is invoked only after the gate allows it."""
+def _provider_configured(provider: str) -> bool:
+    """True when that vendor's API key is present in config.
 
-    def __init__(self, conn, runner: Optional[Callable[[dict], Any]] = None) -> None:
+    Seedance reads ``api_providers.ark.api_key`` (``Config.ARK_API_KEY``).
+    An empty key keeps the dispatcher path and does not open a connection.
+    """
+    from config import Config
+
+    keys = {
+        "ark": Config.ARK_API_KEY,
+        "dashscope": Config.DASHSCOPE_API_KEY,
+        "kling": Config.KLING_API_KEY,
+    }
+    value = keys.get(provider)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _video_output_path(project_id: str, node_id: str) -> str:
+    from pathlib import Path
+
+    from config import Config
+
+    def safe(value: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value)
+        return cleaned or "node"
+
+    return str(Path(Config.RESULT_DIR) / "video" / safe(project_id) / f"{safe(node_id)}.mp4")
+
+
+def _submit_ref(value: Any) -> Optional[str]:
+    """A result id or path from ``adapter.submit``. Empty means the call failed."""
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, dict):
+        if value.get("error") or value.get("ok") is False or value.get("success") is False:
+            return None
+        for key in ("result_id", "task_id", "id", "path", "url", "save_path"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def _video_submit_params(
+    project_id: str,
+    node_id: str,
+    fields: dict,
+    prepared: Any,
+    references: dict,
+    spec,
+) -> dict:
+    """The prepared reference request, plus the prompt and a download path.
+
+    Duration stays on the value the runner took from the model capability.
+    A missing duration is filled from that same capability, including -1
+    when the model allows auto. It is not replaced with a shared default.
+    """
+    from core.agents.video_agent import _capability_duration, _reference_asset_ids
+
+    body = {}
+    if isinstance(prepared, dict):
+        body = {key: value for key, value in prepared.items() if key != "provider_called"}
+    refs = body.get("reference_image_paths")
+    if not isinstance(refs, list):
+        refs = _reference_asset_ids(references)
+    body["reference_image_paths"] = list(refs)
+    if body.get("duration") is None:
+        body["duration"] = _capability_duration(spec, fields.get("shot_duration"))
+    if not body.get("generation_mode"):
+        body["generation_mode"] = "reference" if body["reference_image_paths"] else "text"
+    if not body.get("prompt"):
+        body["prompt"] = fields.get("text") or ""
+    if not body.get("model_id"):
+        body["model_id"] = spec.id
+    if not body.get("resolution"):
+        body["resolution"] = fields.get("resolution") or spec.default_resolution
+    body["save_path"] = _video_output_path(project_id, node_id)
+    ratio = body.get("video_ratio") or body.get("ratio") or spec.default_ratio
+    if ratio:
+        body["ratio"] = ratio
+        body["video_ratio"] = ratio
+    return body
+
+
+class GraphExecutor:
+    """Run one node. The runner is invoked only after the gate allows it.
+
+    ``video_adapter`` is the submit implementation for an authorized video
+    confirm. ``None`` uses the registered adapter when that provider's API
+    key is configured.
+    """
+
+    def __init__(
+        self,
+        conn,
+        runner: Optional[Callable[[dict], Any]] = None,
+        video_adapter: Any = None,
+    ) -> None:
         self.conn = conn
         self._runner = runner or _default_runner
+        self._video_adapter = video_adapter
         self.submissions: list[str] = []
 
     def run_node(self, project_id: str, node_id: str, params: Optional[dict] = None) -> dict:
@@ -272,7 +387,11 @@ class GraphExecutor:
         )
 
     def confirm(self, project_id: str, node_id: str) -> dict:
-        """Accept a held video quote. This is the first ledger write for that call."""
+        """Accept a held video quote. This is the first ledger write for that call.
+
+        Authorize reserves the quote. The video adapter submits only after
+        that reservation is allowed. Spent and done follow a successful submit.
+        """
         graph = self._load(project_id)
         node_id = self._node_id(graph, node_id)
         node = graph.node(node_id)
@@ -718,6 +837,16 @@ class GraphExecutor:
                 "provider_called": False,
             }
         )
+        provider_called = False
+        if fields.get("modality") == "video" and call_confirmed:
+            result, provider_called = self._complete_video_submit(
+                project_id,
+                graph,
+                node_id,
+                fields,
+                result,
+                references,
+            )
         self._store_result(graph, node_id, result)
         amount = view.get("this_quote")
         if amount is None:
@@ -729,7 +858,7 @@ class GraphExecutor:
             amount,
         )
         self._to_done(graph, node_id)
-        graph.update_metadata(node_id, pending_call=None)
+        graph.update_metadata(node_id, pending_call=None, submit_error=None)
         self._save(project_id, graph)
         body = self._pack(
             project_id,
@@ -746,9 +875,77 @@ class GraphExecutor:
             submitted=True,
             spent=True,
             call_confirmed=call_confirmed,
+            provider_called=provider_called,
         )
         body["actual"] = recorded.get("actual")
+        if isinstance(result, dict) and result.get("result_id"):
+            body["result_id"] = result["result_id"]
         return body
+
+    def _video_submitter(self, model_id: str):
+        """Injected adapter, or the registered one when its key is set."""
+        spec = ModelRegistry.get(model_id) if model_id else None
+        if self._video_adapter is not None:
+            return self._video_adapter, spec
+        if spec is None or not _provider_configured(getattr(spec, "provider", "")):
+            return None, spec
+        adapter = ModelRegistry.adapter_for(spec, "video")
+        if adapter is None or not getattr(adapter, "owns_submit", False):
+            return None, spec
+        return adapter, spec
+
+    def _complete_video_submit(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        fields: dict,
+        prepared: Any,
+        references: dict,
+    ) -> tuple:
+        """Call ``adapter.submit`` after authorize. Failure releases the quote."""
+        adapter, spec = self._video_submitter(_text(fields.get("model_id")))
+        if adapter is None or spec is None:
+            return prepared, False
+        if isinstance(prepared, dict):
+            error = prepared.get("error")
+            if isinstance(error, str) and error.strip():
+                self._abort_reserved_video(project_id, graph, node_id, RuntimeError(error.strip()))
+        params = _video_submit_params(project_id, node_id, fields, prepared, references, spec)
+        try:
+            vendor = adapter.submit(spec, params)
+        except Exception as exc:
+            self._abort_reserved_video(project_id, graph, node_id, exc)
+        ref = _submit_ref(vendor)
+        if ref is None:
+            self._abort_reserved_video(
+                project_id,
+                graph,
+                node_id,
+                RuntimeError("video submit returned no result"),
+            )
+        merged = dict(prepared) if isinstance(prepared, dict) else {}
+        merged["provider_called"] = True
+        merged["result_id"] = ref
+        merged["model_id"] = spec.id
+        merged["generation_mode"] = params.get("generation_mode")
+        merged["reference_image_paths"] = list(params.get("reference_image_paths") or [])
+        merged["duration"] = params.get("duration")
+        return merged, True
+
+    def _abort_reserved_video(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        exc: BaseException,
+    ) -> NoReturn:
+        """Skip the reserved quote and surface the submit error. The node stays open."""
+        self._release_quoted_reservation(project_id, node_id)
+        message = str(exc).strip() or exc.__class__.__name__
+        graph.update_metadata(node_id, submit_error=message)
+        self._save(project_id, graph)
+        raise _GateError(f"video submit failed: {message}") from exc
 
     def _submit(self, call: dict) -> Any:
         self.submissions.append(call["node_id"])
@@ -952,6 +1149,7 @@ class GraphExecutor:
         call_confirmed: bool = False,
         submitted: bool = False,
         spent: bool = False,
+        provider_called: bool = False,
     ) -> dict:
         successors = {}
         if node_id and node_id in graph:
@@ -964,7 +1162,7 @@ class GraphExecutor:
             "status": status,
             "submitted": submitted,
             "spent": spent,
-            "provider_called": False,
+            "provider_called": provider_called,
             "gate": gate,
             "call_confirmed": call_confirmed,
             "why_blocked": why_blocked,
