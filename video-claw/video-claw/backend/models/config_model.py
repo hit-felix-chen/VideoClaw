@@ -15,6 +15,20 @@ if backend_dir not in sys.path:
 from copy import deepcopy
 from typing import Any, Optional
 
+
+def _image_pricing():
+    """Load the shared image span after this module has put backend on sys.path."""
+    from models.middle.pricing import (
+        MAX_IMAGE_CALLS_PER_ASSET,
+        MIN_IMAGE_CALLS_PER_ASSET,
+        image_cost_range,
+    )
+
+    return MIN_IMAGE_CALLS_PER_ASSET, MAX_IMAGE_CALLS_PER_ASSET, image_cost_range
+
+
+_MIN_IMAGE_CALLS_PER_ASSET, _MAX_IMAGE_CALLS_PER_ASSET, _image_cost_range = _image_pricing()
+
 MODEL_CONFIG: dict[str, Any] = {'models': {'deepseek-chat': {'name': 'DeepSeek Chat',
                               'provider': 'deepseek',
                               'type': ['llm'],
@@ -590,14 +604,16 @@ class CostEstimate:
     ``MODEL_CONFIG`` entry. Amounts are unlabeled: the registry has no currency
     field. A model that lacks the price for a quantity it would actually bill
     is listed in ``unknown_models`` and left out of the total. It is never
-    priced as zero.
+    priced as zero. R3 ``quote`` does not read these unlabeled amounts; a model
+    without a documented ``source_url`` stays unpriced there.
     """
 
     # Image cost is a range of 1 to 6 calls per asset: _generate_one in
     # character_agent.py loops up to max_iterations = 3, and each pass can
-    # call the image API twice through the doctor rewrite.
-    MIN_IMAGE_CALLS_PER_ASSET = 1
-    MAX_IMAGE_CALLS_PER_ASSET = 6
+    # call the image API twice through the doctor rewrite. The span lives
+    # on the price book; this class only reads it.
+    MIN_IMAGE_CALLS_PER_ASSET = _MIN_IMAGE_CALLS_PER_ASSET
+    MAX_IMAGE_CALLS_PER_ASSET = _MAX_IMAGE_CALLS_PER_ASSET
 
     # video_agent bills seg.get("total_duration", 10) when the field is absent.
     DEFAULT_SEGMENT_DURATION_SECONDS = 10.0
@@ -795,18 +811,7 @@ class CostEstimate:
 
     @staticmethod
     def _image_cost(asset_count: int, unit_price: Optional[float]) -> Optional[dict[str, float]]:
-        if asset_count <= 0:
-            return {"min": 0.0, "max": 0.0}
-        if unit_price is None:
-            return None
-        return {
-            "min": CostEstimate._money(
-                asset_count * CostEstimate.MIN_IMAGE_CALLS_PER_ASSET * unit_price
-            ),
-            "max": CostEstimate._money(
-                asset_count * CostEstimate.MAX_IMAGE_CALLS_PER_ASSET * unit_price
-            ),
-        }
+        return _image_cost_range(asset_count, unit_price)
 
     @staticmethod
     def _video_cost(duration_seconds: float, unit_price: Optional[float]) -> Optional[float]:

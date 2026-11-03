@@ -11,8 +11,11 @@ stores the hash, mime, and kind. Identical bytes share one file.
 project. Looks inherit through ``parent_look_id`` with cycle detection,
 version history, and rollback. ``SegmentRefStore`` binds a segment to an
 asset and a look. ``RegenerationQuote`` prices a stale regenerate and does
-not spend. A look change marks dependents stale in ``node_state`` and, when
-the project has an R6 snapshot, in that graph (see ``storage.staleness``).
+not spend. ``LedgerStore`` records pre-call quotes and actual charges on
+the ``ledger`` table; the budget gate that writes those rows lives in
+``models.middle``. A look change marks dependents stale in ``node_state``
+and, when the project has an R6 snapshot, in that graph (see
+``storage.staleness``).
 """
 
 from storage.assets import AssetStore, ImageStore, LookStore
@@ -30,6 +33,7 @@ from storage.database import (
     StorageError,
     StoreConnection,
 )
+from storage.ledger import LedgerStore
 from storage.projects import GraphStore, ProjectStore
 from storage.references import SegmentRefStore
 from storage.schema import Schema
@@ -44,6 +48,7 @@ __all__ = [
     "GraphStore",
     "ImageNotFoundError",
     "ImageStore",
+    "LedgerStore",
     "LookCycleError",
     "LookNotFoundError",
     "LookStore",

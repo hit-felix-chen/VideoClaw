@@ -24,6 +24,7 @@ SEEDANCE_25_TODO = (
     "minimum token floor when the input includes video: the price page links a separate table",
     "billing frame rate: the token formula uses output fps; 24 on the task page only rounds returned duration",
     "offline inference price: the price page says Seedance 2.5 offline inference is unsupported",
+    "effective_date: the price page does not state a list-price effective date; the field is left empty",
 )
 
 _CONFIG_PRICE_FIELDS = (
@@ -147,6 +148,7 @@ class SpecCatalog:
                     resolution=resolution,
                     includes_video_input=with_video,
                     source=PRICE_DOC,
+                    source_url=PRICE_DOC,
                     list_price=True,
                 )
             )

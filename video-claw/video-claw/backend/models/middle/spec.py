@@ -96,6 +96,8 @@ class PriceQuote:
     includes_video_input: Optional[bool] = None
     source: str = ""
     list_price: bool = False
+    effective_date: Optional[str] = None
+    source_url: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
