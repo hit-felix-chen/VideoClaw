@@ -90,6 +90,34 @@ class ImageNotFoundError(StorageError):
         super().__init__(f"image not found: {image_id}")
 
 
+class LookCycleError(StorageError):
+    """Setting ``parent_look_id`` would loop. Depth itself is not limited."""
+
+    def __init__(self, look_id: str, parent_look_id: str, cycle: list[str]) -> None:
+        self.look_id = look_id
+        self.parent_look_id = parent_look_id
+        self.cycle = list(cycle)
+        shown = " -> ".join(self.cycle)
+        super().__init__(f"look inheritance cycle: {shown}")
+
+
+class LookVersionNotFoundError(StorageError):
+    """This look has no row with this version number."""
+
+    def __init__(self, look_id: str, version: int) -> None:
+        self.look_id = look_id
+        self.version = version
+        super().__init__(f"look version not found: {look_id} version {version}")
+
+
+class SegmentRefNotFoundError(StorageError):
+    """No segment reference row exists for this id."""
+
+    def __init__(self, ref_id: str) -> None:
+        self.ref_id = ref_id
+        super().__init__(f"segment ref not found: {ref_id}")
+
+
 class BlobNotFoundError(StorageError):
     """No blob row exists, or its file is missing from disk."""
 

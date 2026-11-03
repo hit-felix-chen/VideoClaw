@@ -8,7 +8,11 @@ Blob bytes live at ``<data>/blobs/<sha256[:2]>/<sha256>.<ext>``. The database
 stores the hash, mime, and kind. Identical bytes share one file.
 
 ``GraphStore`` saves the JSON object returned by R6's ``to_dict`` on the
-project. Asset, look, and image methods are the schema-level stubs R5 extends.
+project. Looks inherit through ``parent_look_id`` with cycle detection,
+version history, and rollback. ``SegmentRefStore`` binds a segment to an
+asset and a look. ``RegenerationQuote`` prices a stale regenerate and does
+not spend. A look change marks dependents stale in ``node_state`` and, when
+the project has an R6 snapshot, in that graph (see ``storage.staleness``).
 """
 
 from storage.assets import AssetStore, ImageStore, LookStore
@@ -18,13 +22,18 @@ from storage.database import (
     BlobNotFoundError,
     Database,
     ImageNotFoundError,
+    LookCycleError,
     LookNotFoundError,
+    LookVersionNotFoundError,
     ProjectNotFoundError,
+    SegmentRefNotFoundError,
     StorageError,
     StoreConnection,
 )
 from storage.projects import GraphStore, ProjectStore
+from storage.references import SegmentRefStore
 from storage.schema import Schema
+from storage.staleness import RegenerationQuote
 
 __all__ = [
     "AssetNotFoundError",
@@ -35,11 +44,16 @@ __all__ = [
     "GraphStore",
     "ImageNotFoundError",
     "ImageStore",
+    "LookCycleError",
     "LookNotFoundError",
     "LookStore",
+    "LookVersionNotFoundError",
     "ProjectNotFoundError",
     "ProjectStore",
+    "RegenerationQuote",
     "Schema",
+    "SegmentRefNotFoundError",
+    "SegmentRefStore",
     "StorageError",
     "StoreConnection",
 ]
