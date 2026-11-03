@@ -349,20 +349,20 @@ def test_missing_ark_key_does_not_call_the_vendor(conn, monkeypatch):
 
     monkeypatch.setattr("models.middle.providers.ArkVideoAdapter.submit", fake_submit)
     monkeypatch.setattr(Config, "ARK_API_KEY", "")
-    project_id, hero = _ready_video(conn)
+    project_id, _hero = _ready_video(conn)
     executor = GraphExecutor(conn)
     held = executor.run_node(project_id, "video")
-    done = executor.confirm(project_id, "video")
     assert held["provider_called"] is False
+    assert held["status"] == "awaiting_user"
+    from core.executor import _NoVendorKey
+
+    with pytest.raises(_NoVendorKey) as refused:
+        executor.confirm(project_id, "video")
+    assert str(refused.value) == "未配置视频厂商密钥，不会提交也不会入账"
     assert seen == []
-    assert done["provider_called"] is False
-    assert done["status"] == "done"
-    assert done["spent"] is True
-    assert "result_id" not in done
-    assert _metadata(conn, project_id)["result"]["reference_image_paths"] == [hero["id"]]
-    rows = _video_rows(conn, project_id)
-    assert len(rows) == 1
-    assert rows[0]["status"] == SPENT
+    assert _status(conn, project_id) == "awaiting_user"
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
+    assert _video_rows(conn, project_id) == []
 
 
 def test_shot_duration_outside_the_model_range_submits_auto(conn):
@@ -740,7 +740,7 @@ def test_ready_quote_is_claimed_instead_of_left_dangling(conn):
     _portrait(conn, hero["id"])
     paused = GraphExecutor(conn).run_node(project_id, "video")
     assert paused["gate"] == "confirm"
-    held = GraphExecutor(conn).confirm(project_id, "video")
+    held = GraphExecutor(conn, allow_offline_video=True).confirm(project_id, "video")
     assert held["gate"] == "budget"
     ProjectBudget.raise_cap(conn, project_id, held["entry_id"], 80)
     state = conn.execute(
@@ -1380,7 +1380,7 @@ def test_stored_url_survives_a_failed_spend_and_is_not_posted_again(conn, monkey
 def test_raise_budget_refuses_when_the_marker_is_set(conn):
     project_id, _hero = _ready_video(conn, cap=10)
     GraphExecutor(conn).run_node(project_id, "video")
-    held = GraphExecutor(conn).confirm(project_id, "video")
+    held = GraphExecutor(conn, allow_offline_video=True).confirm(project_id, "video")
     assert held["gate"] == "budget"
     document = GraphStore.load(conn, project_id)
     for node in document["nodes"]:
@@ -1390,7 +1390,7 @@ def test_raise_budget_refuses_when_the_marker_is_set(conn):
     GraphStore.save(conn, project_id, document)
     cap = conn.execute("SELECT budget_cap FROM project WHERE id = ?", (project_id,)).fetchone()[0]
     with pytest.raises(StorageError) as refused:
-        GraphExecutor(conn).raise_budget(project_id, held["entry_id"], 500)
+        GraphExecutor(conn, allow_offline_video=True).raise_budget(project_id, held["entry_id"], 500)
     assert "retry_video_submit" in str(refused.value)
     assert conn.execute("SELECT budget_cap FROM project WHERE id = ?", (project_id,)).fetchone()[0] == cap
     assert _metadata(conn, project_id)["submit_dispatched"] is True
@@ -1508,7 +1508,7 @@ def test_stale_retry_without_force_new_spends_the_original_quote(conn, monkeypat
 def test_raise_budget_refuses_a_task_id_without_the_marker(conn):
     project_id, _hero = _ready_video(conn, cap=10)
     GraphExecutor(conn).run_node(project_id, "video")
-    held = GraphExecutor(conn).confirm(project_id, "video")
+    held = GraphExecutor(conn, allow_offline_video=True).confirm(project_id, "video")
     assert held["gate"] == "budget"
     document = GraphStore.load(conn, project_id)
     for node in document["nodes"]:
@@ -1516,7 +1516,7 @@ def test_raise_budget_refuses_a_task_id_without_the_marker(conn):
             node["metadata"]["vendor_task_id"] = "task-only"
     GraphStore.save(conn, project_id, document)
     with pytest.raises(StorageError) as refused:
-        GraphExecutor(conn).raise_budget(project_id, held["entry_id"], 500)
+        GraphExecutor(conn, allow_offline_video=True).raise_budget(project_id, held["entry_id"], 500)
     assert "retry_video_submit" in str(refused.value)
     assert _metadata(conn, project_id)["vendor_task_id"] == "task-only"
     assert _video_rows(conn, project_id)[0]["status"] == AWAITING_USER

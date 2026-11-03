@@ -26,7 +26,7 @@ from api.schemas.executor import (
     RetryVideoSubmitRequest,
 )
 from core.episode import seed_episode_graph
-from core.executor import GraphExecutor, _ClaimLost, _VIDEO
+from core.executor import NO_VENDOR_MESSAGE, GraphExecutor, _ClaimLost, _NoVendorKey
 from graph.dependency_graph import DependencyGraph
 from graph.errors import GraphError, NodeNotFoundError
 from graph.model import NodeStatus
@@ -36,13 +36,11 @@ from storage.database import (
     StorageError,
     StoreConnection,
 )
-from storage.ledger import LedgerStore
 from storage.projects import GraphStore, ProjectStore
 
 router = APIRouter(tags=["Executor"], dependencies=[Depends(get_library_connection)])
 
 _FORCE_NEW_REJECTED = "force_new is only valid on retry_video_submit"
-_NO_VENDOR = "未配置视频厂商密钥，不会提交也不会入账"
 _CLAIM_MOVED = "状态已变化，请刷新"
 _DELETE_BUSY = "项目有尚未结束的提交，不能删除"
 
@@ -51,6 +49,8 @@ _DELETE_BUSY = "项目有尚未结束的提交，不能删除"
 def _errors():
     try:
         yield
+    except _NoVendorKey as exc:
+        raise HTTPException(409, str(exc) or NO_VENDOR_MESSAGE) from None
     except _ClaimLost:
         raise HTTPException(409, _CLAIM_MOVED) from None
     except NodeNotFoundError as exc:
@@ -69,32 +69,6 @@ def _held_submit(node) -> bool:
         return True
     task_id = meta.get("vendor_task_id")
     return isinstance(task_id, str) and bool(task_id.strip())
-
-
-def _refuse_if_no_vendor(executor: GraphExecutor, project_id: str, node_id: str) -> None:
-    """Reject a video confirm when this process cannot call a vendor.
-
-    Direct ``GraphExecutor.confirm`` is unchanged. Only these HTTP routes
-    refuse, and they do so before authorize, so the held quote stays put.
-    """
-    try:
-        graph = executor._load(project_id)
-    except (GraphError, StorageError):
-        return
-    if node_id not in graph:
-        return
-    node = graph.node(node_id)
-    meta = node.metadata if isinstance(node.metadata, dict) else {}
-    pending = meta.get("pending_call") if isinstance(meta.get("pending_call"), dict) else {}
-    modality = pending.get("modality") if isinstance(pending.get("modality"), str) else ""
-    if modality != "video" and node.kind not in _VIDEO:
-        return
-    model_id = pending.get("model_id") or meta.get("model_id") or ""
-    if not isinstance(model_id, str):
-        model_id = ""
-    adapter, _spec = executor._video_submitter(model_id.strip())
-    if adapter is None:
-        raise HTTPException(409, _NO_VENDOR)
 
 
 def _delete_blocked(conn: StoreConnection, project_id: str) -> bool:
@@ -240,9 +214,7 @@ def confirm_node(
     if force_new is not None or (body is not None and "force_new" in body.model_fields_set):
         raise HTTPException(400, _FORCE_NEW_REJECTED)
     with _errors():
-        executor = _executor(conn)
-        _refuse_if_no_vendor(executor, project_id, node_id)
-        return executor.confirm(project_id, node_id)
+        return _executor(conn).confirm(project_id, node_id)
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit")
@@ -256,9 +228,7 @@ def retry_video_submit(
     """Retry a submit that may have reached the vendor. ``force_new`` defaults to false."""
     force_new = False if body is None else bool(body.force_new)
     with _errors():
-        executor = _executor(conn)
-        _refuse_if_no_vendor(executor, project_id, node_id)
-        return executor.retry_video_submit(project_id, node_id, force_new=force_new)
+        return _executor(conn).retry_video_submit(project_id, node_id, force_new=force_new)
 
 
 @router.post("/api/v2/projects/{project_id}/nodes/{node_id}/decline")
@@ -293,12 +263,7 @@ def raise_budget(
     conn: StoreConnection = Depends(get_library_connection),
 ):
     with _errors():
-        entry = LedgerStore.get(conn, entry_id)
-        executor = _executor(conn)
-        node_id = entry.get("node_id")
-        if isinstance(node_id, str) and node_id.strip():
-            _refuse_if_no_vendor(executor, project_id, node_id.strip())
-        return executor.raise_budget(project_id, entry_id, body.budget_cap)
+        return _executor(conn).raise_budget(project_id, entry_id, body.budget_cap)
 
 
 @router.post("/api/v2/projects/{project_id}/budget/{entry_id}/decline")

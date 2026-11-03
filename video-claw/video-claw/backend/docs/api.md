@@ -1,6 +1,6 @@
 # Video-Claw API（v2）
 
-本文列出 `api/app.py` 在本提交实际注册的 HTTP 路由。路径、方法、查询参数和请求体与路由器、Pydantic 模型一致。没有 `/api/project`，也没有六阶段 `execute` / `continue` / `intervene` / `artifact`。
+本文对照 main `faf5988` 列出 `api/app.py` 实际注册的 HTTP 路由，并写上该提交之后无密钥视频守卫的行为。路径、方法、查询参数和请求体与路由器、Pydantic 模型一致。没有 `/api/project`，也没有六阶段 `execute` / `continue` / `intervene` / `artifact`。
 
 **基础 URL**：`http://127.0.0.1:8000`（`config.yaml` 的 `server.host` / `server.port`，默认 `127.0.0.1` 与 `8000`）。
 
@@ -19,7 +19,7 @@
 | 库路由 | 400 | 其他 `StorageError`（种类非法、缺字段、引用不匹配等） |
 | 执行器路由 `executor.py` | 404 | 项目、图节点、形象不存在。删除一个已经不存在的项目也是 404 |
 | 执行器路由 | 400 | `GraphError` 或 `StorageError`（含门禁 `_GateError`）。`confirm` 的查询参数或 JSON 里只要出现 `force_new`（包括 `false`）也是 400，`detail` 为 `force_new is only valid on retry_video_submit` |
-| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（`submit_dispatched` 或非空 `vendor_task_id` 即拒绝，表示可能已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新` |
+| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（`submit_dispatched` 或非空 `vendor_task_id` 即拒绝，表示可能已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`（执行器 `_NoVendorKey`，授权前抛出）。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新`。若当时节点仍是 `running` 且没有 `submit_dispatched` / `vendor_task_id`，会先写回 `awaiting_user` 并释放报价 |
 | 执行器路由 | 422 | `confirm` 或 `retry_video_submit` 的 JSON 把 `force_new` 设成 `null`。字段类型是 `bool`，Pydantic 拒绝 `null`，请求进不了处理函数 |
 | 上传 | 400 | 扩展名不在允许列表 |
 | 上传 | 500 | 落盘失败 |
@@ -321,7 +321,7 @@
 
 查询参数 `force_new` 或 JSON 字段 `force_new` 只要出现就 400，包括 `false`、查询串 `force_new=false` 和 `force_new=true`。省略该字段才是普通确认（前端 `confirmRequest()` 送的是 `{}`）。JSON `{"force_new": null}` 目前是 422，不是 400。
 
-没有 `force_new` 时：先对视频节点做无密钥 409（见上，不入账）。通过之后才 `GraphExecutor.confirm`。这是该次 HTTP 调用的第一次账本写入。结算不要求先拿到 URL：`record_actual` 用的是已保留的 `quote.max`。有 URL 时会先把 `result_obtained` 单独提交，但没有 URL 也会入账并把节点标 `done`（进程内、无适配器的 `confirm` 就是这条）。HTTP 路由在密钥为空时不会走到这一步。
+没有 `force_new` 时：视频节点先做无密钥 409（见上，不入账）。这道检查在 `GraphExecutor.confirm` 里面、授权之前，HTTP 和进程内共用。通过之后才认领并 `authorize`。这是该次调用的第一次账本写入。结算不要求先拿到 URL：`record_actual` 用的是已保留的 `quote.max`。有 URL 时会先把 `result_obtained` 单独提交，但没有 URL 也会入账并把节点标 `done`。无适配器且密钥为空时不会走到这一步，除非构造执行器时传入 `allow_offline_video=True`。
 
 认领在授权之前：`awaiting_user`（或预算上调留下的 `node_state.status = ready`）变成 `running`。并发的第二个 confirm 立刻 400，不会授权也不会提交。
 
@@ -440,8 +440,7 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 
 这些是当前代码的行为，不是还没写上的路由。
 
-- `POST .../looks/{look_id}/impact/confirm` 和 `POST .../impact/regenerate` 不走无密钥 409。批里的视频节点仍会 `authorize` 并按 `quote.max` 入账，`provider_called` 为 false。前端在节点 `done` 且 `provider_called === false`（节点上或 `metadata.result` 上）时显示 `已记账·未调用厂商`（`episodeFlow.ts` 的 `OFFLINE_BADGE`）。
-- 进程内直接 `GraphExecutor.confirm` 同样没有 409。无注入适配器时按 `quote.max` 入账。
+- 图像、VLM、TTS 在 `run` 里仍按 `quote.max` 入账，`provider_called` 为 false。前端在节点 `done` 且 `provider_called === false`（节点上或 `metadata.result` 上）时显示 `已记账·未调用厂商`（`episodeFlow.ts` 的 `OFFLINE_BADGE`）。视频节点没有这道离线入账，除非 `allow_offline_video=True`。
 - `POST /api/sandbox/video` 直接调 `VideoClient`，不经过项目预算，也不看 4–30 秒的图规则。
 - `POST /api/v2/projects` 的图永远是一集 `ep1` 和上面那六条边。没有按用户集数生成图的参数。
 - `submit_dispatched` 落库之后，`stop` 仍拒绝该节点，不能取消已经可能发给厂商的调用。
