@@ -18,10 +18,10 @@ look whose resolved picture changes does two things:
 TODO(R6): image rows are not graph nodes. ``node_state`` keeps
 ``image:{image_id}`` until the graph grows an image node.
 
-TODO(R7): :class:`RegenerationQuote` never calls a model and never writes a
-ledger charge. The executor must refuse to spend until ``confirm`` has
-returned ``confirmed: true`` for the current token, and must leave
-``executed`` false until that user confirmation exists.
+A named model is priced with the R3 price book. A model with no documented
+API price stays unknown: this module does not turn prior image costs into
+a stand-in number. :class:`RegenerationQuote` still never calls a model and
+never writes a ledger row. The executor spends only after its own confirm.
 """
 
 from __future__ import annotations
@@ -53,8 +53,10 @@ _PROTECTED_STATUSES = ("pending", "skipped")
 # Pricing a model id belongs to the price book (R3). Until a caller passes
 # unit_cost, the quote sums costs already stored on image rows.
 _PRICING_NOTE = (
-    "explicit unit_cost, otherwise the sum of recorded image costs; "
-    "the model price book is R3 and the spender is R7"
+    "unit_cost when the caller passes one; otherwise PriceBook for the named model. "
+    "A model with no documented API price is unknown and is not turned into a number. "
+    "Confirming this quote does not spend; the executor writes the ledger "
+    "only after its own confirmation."
 )
 
 
@@ -165,7 +167,11 @@ class RegenerationQuote:
             model = require_name(model, "model")
         unit_cost = optional_amount(unit_cost, "unit_cost")
         artifacts = _stale_artifacts(conn, look_id)
-        estimated, cost_known = _price(artifacts, unit_cost)
+        estimated, cost_known, unknown_models, price_source = _price_artifacts(
+            artifacts,
+            unit_cost=unit_cost,
+            model=model,
+        )
         version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM look_version WHERE look_id = ?",
             (look_id,),
@@ -176,6 +182,7 @@ class RegenerationQuote:
             "model": model,
             "unit_cost": unit_cost,
             "estimated_cost": estimated,
+            "unknown_models": unknown_models,
             "artifacts": [
                 {
                     "node_id": item["node_id"],
@@ -196,6 +203,8 @@ class RegenerationQuote:
             "artifacts": artifacts,
             "estimated_cost": estimated,
             "cost_known": cost_known,
+            "unknown_models": unknown_models,
+            "price_source": price_source,
             "requires_confirmation": count > 0,
             "confirmed": False,
             "executed": False,
@@ -512,17 +521,53 @@ def _graph_blocks_regenerate(conn: sqlite3.Connection, project_id: str, node_id:
     return state["status"] != "stale"
 
 
-def _price(
+def _price_artifacts(
     artifacts: list[dict[str, Any]],
+    *,
     unit_cost: float | None,
-) -> tuple[float | None, bool]:
+    model: str | None,
+) -> tuple[float | None, bool, list[str], str]:
+    """Return estimated cost, whether it is known, unknown models, and the source.
+
+    ``unit_cost`` is an explicit caller price. A named model goes through
+    PriceBook and does not fall back to stored image costs. With no model,
+    the sum of recorded costs is kept for callers that have not picked one.
+    """
     if not artifacts:
-        return 0.0, True
+        return 0.0, True, [], "none"
     if unit_cost is not None:
-        return unit_cost * len(artifacts), True
+        return unit_cost * len(artifacts), True, [], "unit_cost"
+    if model:
+        return _price_from_book(model, artifacts)
     total = 0.0
     for item in artifacts:
         if item["prior_cost"] is None:
-            return None, False
+            return None, False, [], "prior_cost"
         total += float(item["prior_cost"])
-    return total, True
+    return total, True, [], "prior_cost"
+
+
+def _price_from_book(
+    model: str,
+    artifacts: list[dict[str, Any]],
+) -> tuple[float | None, bool, list[str], str]:
+    """Price each stale artifact. A missing API price stays unknown."""
+    from models.middle.pricing import QuoteRequest
+    from models.middle.pricing import quote as price_quote
+
+    total = 0.0
+    for item in artifacts:
+        modality = "image" if item.get("kind") == "image" else "video"
+        priced = price_quote(
+            QuoteRequest(
+                model_id=model,
+                modality=modality,
+                asset_count=1 if modality == "image" else None,
+                quantity=1 if modality == "image" else None,
+            )
+        )
+        if not priced.get("available") or priced.get("max") is None:
+            listed = [str(name) for name in (priced.get("unknown_models") or []) if name]
+            return None, False, listed, "unknown"
+        total += float(priced["max"])
+    return round(total, 6), True, [], "price_book"

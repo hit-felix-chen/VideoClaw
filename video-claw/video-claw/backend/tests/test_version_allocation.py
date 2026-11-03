@@ -40,15 +40,6 @@ class TestCharacterVersions:
         assert done["status"] == "done"
         assert done["selected"] == path
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "BUG character_agent.py:91 _list_versions globs '{asset_id}*.ext', so char_1 "
-            "also matches char_10.png and char_10_v9.png. _next_version_path (line 112) then "
-            "reads that sibling _v9 and allocates char_1_v10.png. "
-            "Repro: touch char_1.png, char_10.png, char_10_v9.png and list versions for char_1."
-        ),
-    )
     def test_sibling_ids_do_not_change_this_asset(self, workspace):
         agent = CharacterDesignerAgent()
         base = "code/result/image/sid/Assets/characters"
@@ -57,6 +48,51 @@ class TestCharacterVersions:
         VersionFiles.touch(os.path.join(base, "char_10_v9.png"))
         assert VersionFiles.names(agent._list_versions("sid", "characters", "char_1")) == ["char_1.png"]
         assert os.path.basename(agent._next_version_path("sid", "characters", "char_1")) == "char_1_v2.png"
+
+    def test_image_rows_are_the_version_identity(self, tmp_path):
+        from pathlib import Path
+
+        from storage import AssetStore, Database, ImageStore, ProjectStore
+
+        conn = Database.connect(tmp_path / "data")
+        try:
+            project = ProjectStore.create(conn, "片场")
+            AssetStore.create(
+                conn,
+                project_id=project["id"],
+                name="甲",
+                kind="character",
+                asset_id="char_1",
+            )
+            AssetStore.create(
+                conn,
+                project_id=project["id"],
+                name="乙",
+                kind="character",
+                asset_id="char_10",
+            )
+            first = ImageStore.create(
+                conn,
+                asset_id="char_1",
+                source="generated",
+                model="fixture",
+                prompt="甲",
+            )
+            ImageStore.create(
+                conn,
+                asset_id="char_10",
+                source="generated",
+                model="fixture",
+                prompt="乙",
+            )
+            agent = CharacterDesignerAgent()
+            versions = agent.list_image_versions(conn, "char_1")
+            assert [item["id"] for item in versions] == [first["id"]]
+            assert all(item["asset_id"] == "char_1" for item in versions)
+        finally:
+            conn.close()
+        source = Path(__file__).resolve().parents[1].joinpath("core/agents/character_agent.py")
+        assert "glob" not in source.read_text(encoding="utf-8")
 
 
 class TestReferenceVersions:

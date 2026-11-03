@@ -10,8 +10,8 @@ stores the hash, mime, and kind. Identical bytes share one file.
 ``GraphStore`` saves the JSON object returned by R6's ``to_dict`` on the
 project. Looks inherit through ``parent_look_id`` with cycle detection,
 version history, and rollback. ``SegmentRefStore`` binds a segment to an
-asset and a look. ``RegenerationQuote`` prices a stale regenerate and does
-not spend. ``LedgerStore`` records pre-call quotes and actual charges on
+asset and a look. ``RegenerationQuote`` prices a stale regenerate from
+PriceBook when a model is named, and does not spend. ``LedgerStore`` records pre-call quotes and actual charges on
 the ``ledger`` table; the budget gate that writes those rows lives in
 ``models.middle``. A look change marks dependents stale in ``node_state``
 and, when the project has an R6 snapshot, in that graph (see

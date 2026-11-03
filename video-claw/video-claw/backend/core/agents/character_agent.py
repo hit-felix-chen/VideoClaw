@@ -3,13 +3,13 @@
 阶段2: 角色/场景设计智能体
 基于阶段1的剧本JSON生成角色4视图和场景全景图
 支持单项重新生成、历史版本切换
-图片以 character_id / setting_id 命名
+图片以 character_id / setting_id 命名。
+磁盘文件只是旧阶段的写出路径；版本身份是 R5 的 image 行，调用解析走 SegmentRefStore。
 """
 
 import os
 import re
 import json
-import glob
 import asyncio
 import logging
 from typing import Any, Optional, Dict, List
@@ -82,16 +82,40 @@ class CharacterDesignerAgent(AgentInterface):
         return os.path.join('code/result/image', str(sid), 'Assets')
 
     def _list_versions(self, sid: str, asset_type: str, asset_id: str) -> List[str]:
-        """列出某个素材的所有历史版本文件路径，按时间排序
+        """列出某个素材的所有历史版本文件路径，按时间排序。
+
         文件命名: {asset_id}.png, {asset_id}_v2.png, {asset_id}_v3.png, ...
+        只匹配该 id 本身，char_1 不会带上 char_10。
         """
         adir = os.path.join(self._asset_base(sid), asset_type)
-        files = []
-        for ext in ("png", "jpg", "jpeg", "webp", "bmp"):
-            pattern = os.path.join(adir, f"{asset_id}*.{ext}")
-            files.extend(glob.glob(pattern))
-        files = sorted(set(files), key=os.path.getmtime)
-        return files
+        if not os.path.isdir(adir):
+            return []
+        pattern = re.compile(
+            rf"^{re.escape(asset_id)}(?:_v\d+)?\.(?:png|jpg|jpeg|webp|bmp)$",
+            re.IGNORECASE,
+        )
+        files = [os.path.join(adir, name) for name in os.listdir(adir) if pattern.match(name)]
+        return sorted(set(files), key=os.path.getmtime)
+
+    @staticmethod
+    def list_image_versions(
+        conn: Any,
+        asset_id: Optional[str] = None,
+        look_id: Optional[str] = None,
+    ) -> List[dict]:
+        """Return R5 image rows for this asset or look. Both empty lists nothing."""
+        if asset_id is None and look_id is None:
+            return []
+        from storage.assets import ImageStore
+
+        return ImageStore.list(conn, asset_id=asset_id, look_id=look_id)
+
+    @staticmethod
+    def resolve_calls(conn: Any, text: str, project_id: Optional[str] = None) -> dict:
+        """Resolve ``@资产名`` / ``@资产名/形象名`` through SegmentRefStore."""
+        from storage.references import SegmentRefStore
+
+        return SegmentRefStore.resolve(conn, text, project_id=project_id)
 
     def _next_version_path(self, sid: str, asset_type: str, asset_id: str) -> str:
         """获取下一个版本的文件路径"""

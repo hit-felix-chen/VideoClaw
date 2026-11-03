@@ -19,15 +19,16 @@ setup_concurrent_logging()
 logger = logging.getLogger(__name__)
 
 from api.routers import (
+    configuration_router,
+    executor_router,
     files_router,
     health_router,
+    library_router,
+    models_router,
     sandbox_router,
     sessions_router,
     stages_router,
     workflow_router,
-    models_router,
-    configuration_router,
-    library_router,
 )
 
 
@@ -62,6 +63,7 @@ app.include_router(sandbox_router)
 app.include_router(models_router)
 app.include_router(configuration_router)
 app.include_router(library_router)
+app.include_router(executor_router)
 logger.info("API routers registered")
 
 
