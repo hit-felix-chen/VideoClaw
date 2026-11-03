@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import NodeCard from '@/components/episode/NodeCard';
 import {
@@ -25,7 +25,7 @@ import {
   type ProjectStatus,
   type StopResult,
 } from '@/lib/episodeApi';
-import { confirmThenReload, nodeLabel, runPayload, statusLabel } from '@/lib/episodeFlow';
+import { confirmThenReload, mergeModelDrafts, nodeLabel, runPayload, statusLabel } from '@/lib/episodeFlow';
 
 const EMPTY_MODELS = { llm_model: '', image_model: '', video_model: '', tts_model: '' };
 
@@ -57,6 +57,7 @@ export default function EpisodeStudio() {
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [models, setModels] = useState(EMPTY_MODELS);
+  const modelBaseline = useRef(EMPTY_MODELS);
   const [name, setName] = useState('');
   const [idea, setIdea] = useState('');
   const [budget, setBudget] = useState('');
@@ -76,7 +77,12 @@ export default function EpisodeStudio() {
       }
       return merged;
     });
-    setModels(modelsFromNodes(next.nodes || []));
+    const incoming = modelsFromNodes(next.nodes || []);
+    setModels(current => {
+      const merged = mergeModelDrafts(current, modelBaseline.current, incoming);
+      modelBaseline.current = merged.baseline;
+      return merged.drafts;
+    });
   }, []);
 
   const reload = useCallback(async (id: string) => {
@@ -98,6 +104,8 @@ export default function EpisodeStudio() {
       setStatus(null);
       return;
     }
+    modelBaseline.current = EMPTY_MODELS;
+    setModels(EMPTY_MODELS);
     let cancelled = false;
     setError('');
     getProjectStatus(projectId)

@@ -6,6 +6,7 @@ import {
   confirmRequest,
   confirmThenReload,
   formatQuote,
+  mergeModelDrafts,
   needsVideoRetry,
   offlineUncalled,
   reservationCopy,
@@ -97,5 +98,21 @@ describe('episode view', () => {
       },
     )).rejects.toThrow(/未配置视频厂商密钥/);
     expect(reloads).toEqual(['status']);
+  });
+
+  it('keeps an unsaved model draft when status is reloaded', () => {
+    const baseline = { llm_model: 'saved-llm', image_model: 'saved-image', video_model: '', tts_model: '' };
+    const current = { ...baseline, llm_model: '草稿模型' };
+    const incoming = { llm_model: 'saved-llm', image_model: 'saved-image', video_model: 'saved-video', tts_model: '' };
+    const merged = mergeModelDrafts(current, baseline, incoming);
+    expect(merged.drafts.llm_model).toBe('草稿模型');
+    expect(merged.drafts.video_model).toBe('saved-video');
+    expect(merged.baseline.llm_model).toBe('saved-llm');
+    expect(merged.baseline.video_model).toBe('saved-video');
+    const again = mergeModelDrafts(merged.drafts, merged.baseline, {
+      ...incoming,
+      llm_model: 'server-moved',
+    });
+    expect(again.drafts.llm_model).toBe('草稿模型');
   });
 });

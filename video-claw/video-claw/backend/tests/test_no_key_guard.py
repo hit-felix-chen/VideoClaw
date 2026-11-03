@@ -4,6 +4,7 @@ Image nodes still settle offline. ``allow_offline_video=True`` is the
 explicit in-process opt-in. No test calls a vendor.
 """
 
+import logging
 import threading
 
 import pytest
@@ -300,3 +301,38 @@ def test_claim_lost_returns_a_running_node_and_releases_the_quote(conn, priced, 
     assert continued["status"] == "done"
     assert continued["provider_called"] is True
     assert len(adapter.calls) == 1
+
+
+def test_unwind_logs_when_the_awaiting_write_is_rejected(conn, caplog):
+    project = ProjectStore.create(conn, "回写失败", budget_cap=100)
+    project_id = project["id"]
+    graph = DependencyGraph()
+    graph.add_node("video", kind="shot_segment")
+    graph.transition("video", NodeStatus.RUNNING)
+    GraphStore.save(conn, project_id, graph.to_dict())
+    conn.execute(
+        """
+        INSERT INTO node_state (project_id, node_id, status, pinned, updated_at)
+        VALUES (?, 'video', 'running', 0, '2026-01-01T00:00:00.000000Z')
+        """,
+        (project_id,),
+    )
+
+    def probe(executor):
+        executor.conn.execute(
+            """
+            UPDATE node_state SET updated_at = ?
+            WHERE project_id = ? AND node_id = 'video'
+            """,
+            ("2099-01-01T00:00:00.000000Z", project_id),
+        )
+
+    GraphExecutor.save_probe = probe
+    try:
+        with caplog.at_level(logging.WARNING, logger="core.executor"):
+            GraphExecutor(conn)._unwind_lost_claim(project_id, "video", None)
+    finally:
+        GraphExecutor.save_probe = None
+    assert _status(conn, project_id, "video") == "running"
+    assert "compare-and-save rejected" in caplog.text
+    assert project_id in caplog.text

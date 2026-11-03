@@ -221,7 +221,7 @@
 
 ## 执行器
 
-路由都在 `api/routers/executor.py`，调用 `GraphExecutor`。HTTP 上的视频 `confirm`、`retry_video_submit` 和 `raise` 在授权之前先看 `_video_submitter`：没有注入适配器，且该模型供应商（`ark` / `dashscope` / `kling`）的 `api_key` 为空时，直接 409，不调用 `confirm`，不入账。进程里直接调用 `GraphExecutor.confirm` 没有这道 409，无适配器时仍会按 `quote.max` 入账。真正的厂商 POST 只发生在授权之后，并且要有注入的适配器或已配置的密钥。
+路由都在 `api/routers/executor.py`，调用 `GraphExecutor`。无适配器且供应商密钥为空时，拒绝发生在 `GraphExecutor.confirm` 里面、授权之前（`_require_video_vendor`，`confirm` 一进来就调用）。进程内直接 `confirm` 同样抛 `_NoVendorKey`，不入账，也不写 `submit_dispatched`。HTTP 的 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 把这个异常映射成 409：`未配置视频厂商密钥，不会提交也不会入账`。只有构造时显式 `allow_offline_video=True` 才跳过这道检查，并按 `quote.max` 离线入账。图像、VLM、TTS 不走这道拒绝。真正的厂商 POST 只发生在授权之后，并且要有注入的适配器或已配置的密钥。
 
 ### `POST /api/v2/projects`
 
@@ -416,7 +416,7 @@
 
 `confirm` 在 `adapter.submit` 之前把节点 metadata `submit_dispatched` 写成 true 并提交事务。供应商返回任务 id 时写入 `vendor_task_id`，标记保持 true。拿到结果 URL 后先单独提交 `result_obtained`（同时保持 `submit_dispatched`），再在同一事务里把账本记为 `spent` 并把节点标 `done`。本地文件在 `code/result/video/<project_id>/<node_id>.mp4`，URL 记在 `result_id`。
 
-HTTP 的 `confirm` / `retry_video_submit` / `raise` 在密钥为空且没有注入适配器时 409，不入账，也不写 `submit_dispatched`。进程内直接 `GraphExecutor.confirm` 没有这道拒绝：`_video_submitter` 在写标记之前返回，不 POST，然后 `_finish` 仍按 `quote.max` 入账，节点 `done`，`provider_called` 为 false。
+`confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在密钥为空且没有注入适配器时，都在 `GraphExecutor._require_video_vendor` 里、授权前拒绝。HTTP 是 409，进程内是 `_NoVendorKey`。不入账，也不写 `submit_dispatched`，节点不会因此变成 `done`。只有 `allow_offline_video=True` 才离线按 `quote.max` 入账且 `provider_called` 为 false。`_ClaimLost` 把这次报价标 `skipped`；节点若仍是 `running` 且没有厂商标记，会写回 `awaiting_user`。这次回写走比较并保存，失败会被吞掉并打 warning：节点可能一直 `running`，直到 `recover_stale_submit_claims`（30 分钟）回收。
 
 标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。最后这句只属于已经进入 `submit` 的适配器（例如注入了适配器，客户端又发现没有密钥）。HTTP 缺密钥路径不进入 `submit`，所以不是清标记。清掉时报价改为 `skipped`，节点回到 `awaiting_user`。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。`submit_dispatched` 已经落库时，`stop` 也拒绝这个节点，不能取消厂商调用。
 

@@ -99,6 +99,7 @@ ledger row. Image, VLM, and TTS still reserve immediately.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, NoReturn, Optional
 
 from graph.dependency_graph import DependencyGraph
@@ -112,6 +113,8 @@ from storage.database import StorageError, dump_json, require_id, transaction, u
 from storage.ledger import AWAITING_USER, QUOTED, SKIPPED, LedgerStore
 from storage.projects import GraphStore, ProjectStore
 from storage.staleness import RegenerationQuote
+
+logger = logging.getLogger(__name__)
 
 _VIDEO = frozenset({"shot_segment", "draft_video", "final_video", "segment", "video"})
 _IMAGE = frozenset({"character", "scene", "setting", "keyframe", "image"})
@@ -2521,6 +2524,14 @@ class GraphExecutor:
                     resume_pause=resume_pause,
                 )
         except _SaveRejected:
+            logger.warning(
+                "compare-and-save rejected for project %s node %s; "
+                "the in-memory write was not stored. A lost video claim "
+                "can stay running until recover_stale_submit_claims "
+                "(VIDEO_SUBMIT_CLAIM_TTL_SECONDS, 30 minutes).",
+                project_id,
+                node_id,
+            )
             return
 
     def _write_owned_node(
