@@ -40,16 +40,30 @@ dispatcher path the existing suite drives.
 
 If ``submit`` raises or returns nothing useful, the reserved quote is
 marked skipped, the same release an impact regenerate uses for a runner
-failure. The claim is put back to ``awaiting_user``, ``submit_error`` is
-stored with ``ARK_API_KEY`` redacted, and the error is raised. No spent row
-is written.
+failure. The claim is put back to ``awaiting_user`` only when
+``node_state.updated_at`` is still the stamp this claim wrote, so a late
+failure cannot overwrite another attempt that already finished.
+``submit_error`` is stored with ``ARK_API_KEY`` redacted. The raised
+error does not chain the vendor exception. No spent row is written.
+Spent and done are committed in one transaction after submit returns.
 
-A claim left in ``running`` because the process died is reclaimable after
-``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes; a live Seedance poll is
-about 10 minutes). The next ``confirm`` takes a stale claim, and
-``GraphExecutor.recover_stale_submit_claims`` does the same for startup.
-A fresh ``running`` claim is rejected so a killed process cannot stay
-``running`` forever and a live submit cannot be double-spent.
+Before ``adapter.submit``, the same claim writes ``submit_dispatched`` on
+the node and commits it. A kill during the poll leaves that marker.
+After ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` (30 minutes), recovery and the
+next ``confirm`` do not submit again: the node returns to
+``awaiting_user`` with a note that the attempt may have reached the
+vendor. ``retry_video_submit`` is the explicit retry. It clears the
+marker only after that call, then submits. A stale ``running`` row with
+no marker died before the vendor call and can be claimed again.
+
+The Seedance client stops the whole submit at 20 minutes
+(``SUBMIT_DEADLINE_SECONDS``), under the 30-minute TTL. The poll's own
+cap of 120 rounds with a 30-second HTTP timeout and a 5-second pause
+would otherwise run about 74 minutes and outlive the claim.
+A fresh ``running`` claim is rejected so a live submit is not double-spent.
+``raise_budget`` claims the same way. ``node_state`` ``ready`` left by a
+kill after the cap is raised is claimable, and that confirm spends the
+quote already reserved instead of saying the node is not awaiting.
 
 Confirming a look impact is the path that does rerun the confirmed
 downstream set. Each of those nodes goes through ``run_node``. A video node
@@ -93,9 +107,14 @@ _NAMED = frozenset({"video", "image", "vlm", "tts"})
 _BUDGET_ONLY = frozenset({"image", "vlm", "tts"})
 _STRUCTURAL = frozenset({"script", "storyboard", "previz"})
 _OPEN = frozenset({NodeStatus.PENDING, NodeStatus.STALE, NodeStatus.FAILED})
-# Longer than ArkVideoAdapter's poll (about 10 minutes) so a live submit is
-# not stolen. A running row older than this was left by a dead process.
+# Must stay above Seedance SUBMIT_DEADLINE_SECONDS (20 minutes). The raw
+# poll cap is about 74 minutes, which used to outlive this claim.
 VIDEO_SUBMIT_CLAIM_TTL_SECONDS = 30 * 60
+SUBMIT_DISPATCHED = "submit_dispatched"
+SUBMIT_DISPATCHED_NOTE = (
+    "previous submit may have reached the vendor and was not finished; "
+    "it was not sent again. Call retry_video_submit to confirm a manual retry."
+)
 
 
 def _default_runner(call: dict) -> dict:
@@ -329,6 +348,21 @@ def _batch_provider_called(nodes: Any) -> bool:
     return any(bool(item.get("provider_called")) for item in nodes if isinstance(item, dict))
 
 
+def _dispatched(node) -> bool:
+    metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    return bool(metadata.get(SUBMIT_DISPATCHED))
+
+
+def _ledger_view(entry: dict) -> dict:
+    detail = entry["detail"] if isinstance(entry.get("detail"), dict) else None
+    return {
+        "entry_id": entry["id"],
+        "this_quote": entry.get("quote_amount"),
+        "quote": detail,
+        "message": "",
+    }
+
+
 def _video_submit_params(
     project_id: str,
     node_id: str,
@@ -388,6 +422,7 @@ class GraphExecutor:
         self._runner = runner or _default_runner
         self._video_adapter = video_adapter
         self.submissions: list[str] = []
+        self._claim_stamps: dict[str, str] = {}
 
     def run_node(self, project_id: str, node_id: str, params: Optional[dict] = None) -> dict:
         params = dict(params or {})
@@ -499,17 +534,24 @@ class GraphExecutor:
             call_confirmed=False,
         )
 
-    def confirm(self, project_id: str, node_id: str) -> dict:
+    def confirm(self, project_id: str, node_id: str, *, retry: bool = False) -> dict:
         """Accept a held video quote. This is the first ledger write for that call.
 
         The node is claimed (``awaiting_user`` to ``running``) before
         authorize. The video adapter submits only after that reservation is
         allowed. Spent and done follow a successful submit. A failed submit
-        returns the node to ``awaiting_user``.
+        returns the node to ``awaiting_user``. ``retry=True`` clears a
+        dispatched marker from an interrupted submit, then submits.
         """
         graph = self._load(project_id)
         node_id = self._node_id(graph, node_id)
         node = graph.node(node_id)
+        if retry:
+            self._clear_dispatched_marker(project_id, graph, node_id)
+            graph = self._load(project_id)
+            node = graph.node(node_id)
+        elif _dispatched(node) and node.status == NodeStatus.AWAITING_USER:
+            raise _GateError(SUBMIT_DISPATCHED_NOTE)
         if node.status not in {NodeStatus.AWAITING_USER, NodeStatus.RUNNING}:
             raise _GateError("node is not awaiting confirmation")
         fields = node.metadata.get("pending_call")
@@ -518,6 +560,22 @@ class GraphExecutor:
         existing = self._awaiting_entry(project_id, node_id)
         if existing is not None:
             return self._held_budget(project_id, graph, node_id, existing)
+        quoted = self._open_quoted(project_id, node_id)
+        state = self._node_state_row(project_id, node_id)
+        if quoted is not None and state is not None and state["status"] == "ready":
+            self._acquire_submit_claim(project_id, graph, node_id)
+            try:
+                return self._finish(
+                    project_id,
+                    graph,
+                    node_id,
+                    fields,
+                    _ledger_view(quoted),
+                    call_confirmed=True,
+                )
+            except Exception:
+                self._abandon_submit_claim(project_id, node_id)
+                raise
         self._acquire_submit_claim(project_id, graph, node_id)
         try:
             request, duration, _quantity = self._request(fields)
@@ -530,7 +588,11 @@ class GraphExecutor:
             )
             references, versions = self._context(project_id, fields)
             if not view["allowed"]:
-                self._release_submit_claim(project_id, graph, node_id)
+                # authorize already moved node_state to awaiting_user. The
+                # graph JSON is still running from the claim, so write that
+                # back without the claim stamp: the budget row is no longer
+                # the running stamp this claim stored.
+                self._restore_awaiting(project_id, graph, node_id)
                 return self._from_budget(
                     project_id,
                     graph,
@@ -550,9 +612,16 @@ class GraphExecutor:
                 call_confirmed=True,
             )
         except Exception:
-            if graph.node(node_id).status == NodeStatus.RUNNING:
-                self._release_submit_claim(project_id, graph, node_id)
+            self._abandon_submit_claim(project_id, node_id)
             raise
+
+    def retry_video_submit(self, project_id: str, node_id: str) -> dict:
+        """Confirm a manual retry of a submit that may have reached the vendor.
+
+        This is the only path that clears ``submit_dispatched``. The marker
+        is removed after this call starts, and then the normal confirm submits.
+        """
+        return self.confirm(project_id, node_id, retry=True)
 
     @staticmethod
     def recover_stale_submit_claims(conn) -> list[str]:
@@ -590,10 +659,15 @@ class GraphExecutor:
                 continue
             if node.status not in {NodeStatus.RUNNING, NodeStatus.AWAITING_USER}:
                 continue
-            executor._release_quoted_reservation(project_id, node_id)
-            if node.status == NodeStatus.RUNNING:
-                graph.transition(node_id, NodeStatus.AWAITING_USER)
-            executor._save(project_id, graph)
+            state = executor._node_state_row(project_id, node_id)
+            if state is None or state["updated_at"] >= cutoff:
+                continue
+            executor._claim_stamps[node_id] = state["updated_at"]
+            if _dispatched(node):
+                executor._park_dispatched_attempt(project_id, graph, node_id)
+            else:
+                executor._release_quoted_reservation(project_id, node_id)
+                executor._release_submit_claim(project_id, graph, node_id)
             released.append(node_id)
         return released
 
@@ -601,21 +675,20 @@ class GraphExecutor:
         """Take the single in-flight submit for this node.
 
         ``BEGIN IMMEDIATE`` plus ``UPDATE ... WHERE status = 'awaiting_user'``
-        lets one connection win. The other sees ``running`` and is rejected
+        lets one connection win. ``ready`` (left by ``raise_budget``) is
+        claimable the same way. The other sees ``running`` and is rejected
         before authorize or ``submit``. A ``running`` row older than
-        ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` is a dead claim: its unsettled
-        quote is skipped and this confirm takes the node.
+        ``VIDEO_SUBMIT_CLAIM_TTL_SECONDS`` with no dispatched marker died
+        before the vendor call: its unsettled quote is skipped and this
+        confirm takes the node. A stale row that already has
+        ``submit_dispatched`` is parked for a manual retry and is not taken.
         """
         now = utc_now()
         cutoff = _claim_cutoff()
+        park = False
+        park_stamp = None
         with transaction(self.conn):
-            row = self.conn.execute(
-                """
-                SELECT status, updated_at, pinned FROM node_state
-                WHERE project_id = ? AND node_id = ?
-                """,
-                (project_id, node_id),
-            ).fetchone()
+            row = self._node_state_row(project_id, node_id)
             if row is not None and row["pinned"]:
                 raise _GateError("node submit is already in progress")
             status = None if row is None else row["status"]
@@ -625,11 +698,14 @@ class GraphExecutor:
                 and isinstance(updated_at, str)
                 and updated_at < cutoff
             )
-            if status == NodeStatus.RUNNING.value and not stale:
+            if stale and _dispatched(graph.node(node_id)):
+                park = True
+                park_stamp = updated_at
+            elif status == NodeStatus.RUNNING.value and not stale:
                 raise _GateError("node submit is already in progress")
-            if status not in (None, NodeStatus.AWAITING_USER.value) and not stale:
+            elif status not in (None, NodeStatus.AWAITING_USER.value, "ready") and not stale:
                 raise _GateError("node is not awaiting confirmation")
-            if stale:
+            elif stale:
                 self._release_quoted_reservation(project_id, node_id)
                 changed = self.conn.execute(
                     """
@@ -649,6 +725,9 @@ class GraphExecutor:
                 )
                 if changed.rowcount != 1:
                     raise _GateError("node submit is already in progress")
+                self._mark_submitting(graph, node_id)
+                self._save(project_id, graph)
+                self._remember_claim(project_id, node_id)
             elif status is None:
                 self.conn.execute(
                     """
@@ -657,6 +736,9 @@ class GraphExecutor:
                     """,
                     (project_id, node_id, NodeStatus.RUNNING.value, now),
                 )
+                self._mark_submitting(graph, node_id)
+                self._save(project_id, graph)
+                self._remember_claim(project_id, node_id)
             else:
                 changed = self.conn.execute(
                     """
@@ -669,13 +751,24 @@ class GraphExecutor:
                         now,
                         project_id,
                         node_id,
-                        NodeStatus.AWAITING_USER.value,
+                        status,
                     ),
                 )
                 if changed.rowcount != 1:
                     raise _GateError("node submit is already in progress")
-            self._mark_submitting(graph, node_id)
-            self._save(project_id, graph)
+                self._mark_submitting(graph, node_id)
+                self._save(project_id, graph)
+                self._remember_claim(project_id, node_id)
+        if park:
+            self._claim_stamps[node_id] = park_stamp
+            self._park_dispatched_attempt(project_id, graph, node_id)
+            raise _GateError(SUBMIT_DISPATCHED_NOTE)
+
+    def _remember_claim(self, project_id: str, node_id: str) -> None:
+        """Store the ``updated_at`` ``_save`` actually wrote for this claim."""
+        row = self._node_state_row(project_id, node_id)
+        if row is not None and isinstance(row["updated_at"], str):
+            self._claim_stamps[node_id] = row["updated_at"]
 
     def _mark_submitting(self, graph: DependencyGraph, node_id: str) -> None:
         status = graph.node(node_id).status
@@ -686,14 +779,137 @@ class GraphExecutor:
             return
         raise _GateError("node is not awaiting confirmation")
 
-    def _release_submit_claim(self, project_id: str, graph: DependencyGraph, node_id: str) -> None:
-        """Put a claimed node back to ``awaiting_user`` so a later confirm can retry."""
+    def _release_submit_claim(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+        *,
+        keep_dispatched: bool = False,
+        note: Optional[str] = None,
+    ) -> None:
+        """Put this claim back to ``awaiting_user``.
+
+        The write runs only when ``node_state.updated_at`` is still the stamp
+        this claim stored. A later attempt that already moved the row is left
+        untouched, including a node that is already done.
+        """
+        stamp = self._claim_stamps.get(node_id)
+        with transaction(self.conn):
+            row = self._node_state_row(project_id, node_id)
+            if stamp is None or row is None:
+                return
+            if row["status"] != NodeStatus.RUNNING.value or row["updated_at"] != stamp:
+                return
+            status = graph.node(node_id).status
+            if status == NodeStatus.DONE:
+                return
+            if status == NodeStatus.RUNNING:
+                graph.transition(node_id, NodeStatus.AWAITING_USER)
+            if note is not None:
+                graph.update_metadata(node_id, submit_error=note)
+            if not keep_dispatched:
+                graph.update_metadata(node_id, submit_dispatched=None)
+            self._save(project_id, graph)
+
+    def _park_dispatched_attempt(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+    ) -> None:
+        """Stop a stale dispatched submit without calling the vendor again."""
+        self._release_quoted_reservation(project_id, node_id)
+        self._release_submit_claim(
+            project_id,
+            graph,
+            node_id,
+            keep_dispatched=True,
+            note=SUBMIT_DISPATCHED_NOTE,
+        )
+
+    def _restore_awaiting(self, project_id: str, graph: DependencyGraph, node_id: str) -> None:
+        """Write the in-memory node back to ``awaiting_user`` after a budget pause."""
         status = graph.node(node_id).status
         if status == NodeStatus.DONE:
             return
         if status == NodeStatus.RUNNING:
             graph.transition(node_id, NodeStatus.AWAITING_USER)
         self._save(project_id, graph)
+
+    def _abandon_submit_claim(self, project_id: str, node_id: str) -> None:
+        """Reload the graph, then release only if this claim still owns the row."""
+        try:
+            fresh = self._load(project_id)
+        except _GateError:
+            return
+        if node_id not in fresh:
+            return
+        self._release_submit_claim(project_id, fresh, node_id)
+
+    def _clear_dispatched_marker(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+    ) -> None:
+        """Drop the marker after the user asks for a manual retry.
+
+        A live ``running`` claim is left in place. The graph JSON is saved
+        without touching ``node_state.updated_at``, so a stale claim stays
+        stale and the following confirm can take it.
+        """
+        node = graph.node(node_id)
+        if not _dispatched(node):
+            raise _GateError("node has no interrupted submit to retry")
+        state = self._node_state_row(project_id, node_id)
+        if (
+            state is not None
+            and state["status"] == NodeStatus.RUNNING.value
+            and isinstance(state["updated_at"], str)
+            and state["updated_at"] >= _claim_cutoff()
+        ):
+            raise _GateError("node submit is already in progress")
+        graph.update_metadata(node_id, submit_dispatched=None, submit_error=None)
+        with transaction(self.conn):
+            GraphStore.save(self.conn, project_id, graph.to_dict())
+
+    def _persist_dispatched_marker(
+        self,
+        project_id: str,
+        graph: DependencyGraph,
+        node_id: str,
+    ) -> None:
+        """Commit ``submit_dispatched`` before the vendor call.
+
+        ``node_state.updated_at`` stays on the claim stamp so a failure can
+        still compare-and-save. The marker is durable if the process dies
+        during the poll.
+        """
+        graph.update_metadata(node_id, submit_dispatched=True)
+        with transaction(self.conn):
+            GraphStore.save(self.conn, project_id, graph.to_dict())
+
+    def _node_state_row(self, project_id: str, node_id: str):
+        return self.conn.execute(
+            """
+            SELECT status, updated_at, pinned FROM node_state
+            WHERE project_id = ? AND node_id = ?
+            """,
+            (project_id, node_id),
+        ).fetchone()
+
+    def _open_quoted(self, project_id: str, node_id: str) -> Optional[dict]:
+        rows = [
+            entry
+            for entry in LedgerStore.list(self.conn, project_id)
+            if entry["node_id"] == node_id
+            and entry["status"] == QUOTED
+            and entry["actual_amount"] is None
+        ]
+        if not rows:
+            return None
+        return rows[-1]
 
     def decline_node(self, project_id: str, node_id: str) -> dict:
         graph = self._load(project_id)
@@ -734,6 +950,20 @@ class GraphExecutor:
         fields = graph.node(node_id).metadata.get("pending_call")
         if not isinstance(fields, dict):
             raise _GateError("node has no held call to continue")
+        if fields.get("modality") == "video" or graph.node(node_id).kind in _VIDEO:
+            self._acquire_submit_claim(project_id, graph, node_id)
+            try:
+                return self._finish(
+                    project_id,
+                    graph,
+                    node_id,
+                    fields,
+                    view,
+                    call_confirmed=True,
+                )
+            except Exception:
+                self._abandon_submit_claim(project_id, node_id)
+                raise
         return self._finish(
             project_id,
             graph,
@@ -972,7 +1202,7 @@ class GraphExecutor:
             failed = exc.summary.get("failed_node_id")
             raise _GateError(
                 f"impact regenerate failed on node {failed}: {exc.summary.get('error')}"
-            ) from exc
+            ) from None
         ImpactConfirmation.store_result(self.conn, token, summary)
         return summary
 
@@ -992,7 +1222,7 @@ class GraphExecutor:
                 summary["failed"] = True
                 summary["failed_node_id"] = node_id
                 summary["error"] = str(exc).strip() or exc.__class__.__name__
-                raise _ImpactFailure(summary) from exc
+                raise _ImpactFailure(summary) from None
             results.append(result)
             if result.get("status") == AWAITING_USER:
                 halted = True
@@ -1113,15 +1343,23 @@ class GraphExecutor:
         amount = view.get("this_quote")
         if amount is None:
             raise _GateError("reserved quote has no amount")
-        recorded = ProjectBudget.record_actual(
-            self.conn,
-            project_id,
-            view["entry_id"],
-            amount,
-        )
-        self._to_done(graph, node_id)
-        graph.update_metadata(node_id, pending_call=None, submit_error=None)
-        self._save(project_id, graph)
+        # Spent and done become visible together. The vendor call already
+        # returned, so this transaction does not hold the claim across poll.
+        with transaction(self.conn):
+            recorded = ProjectBudget.record_actual(
+                self.conn,
+                project_id,
+                view["entry_id"],
+                amount,
+            )
+            self._to_done(graph, node_id)
+            graph.update_metadata(
+                node_id,
+                pending_call=None,
+                submit_error=None,
+                submit_dispatched=None,
+            )
+            self._save(project_id, graph)
         body = self._pack(
             project_id,
             graph,
@@ -1184,6 +1422,12 @@ class GraphExecutor:
         params = _video_submit_params(project_id, node_id, fields, prepared, references, spec)
         try:
             params = self._with_reference_files(params, references)
+        except Exception as exc:
+            self._abort_reserved_video(project_id, graph, node_id, exc)
+        # Commit the marker before the vendor call. A kill during poll leaves
+        # it set so a later confirm does not submit a second time.
+        self._persist_dispatched_marker(project_id, graph, node_id)
+        try:
             vendor = adapter.submit(spec, params)
         except Exception as exc:
             self._abort_reserved_video(project_id, graph, node_id, exc)
@@ -1240,7 +1484,7 @@ class GraphExecutor:
         message = _redact_secret(str(exc).strip() or exc.__class__.__name__)
         graph.update_metadata(node_id, submit_error=message)
         self._release_submit_claim(project_id, graph, node_id)
-        raise _GateError(f"video submit failed: {message}") from exc
+        raise _GateError(f"video submit failed: {message}") from None
 
     def _submit(self, call: dict) -> Any:
         self.submissions.append(call["node_id"])

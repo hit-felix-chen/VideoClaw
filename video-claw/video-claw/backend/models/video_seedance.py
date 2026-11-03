@@ -20,6 +20,12 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+# 120 polls * (30s GET timeout + 5s pause) plus the create and download
+# timeouts is about 74 minutes. The executor's claim TTL is 30 minutes, so
+# the whole submit must give up sooner than that and return the node to
+# the caller instead of being reclaimed while it is still polling.
+SUBMIT_DEADLINE_SECONDS = 20 * 60
+
 class SeedanceVideoClient:
     """
     Seedance 视频生成客户端（字节跳动 ARK）
@@ -67,15 +73,19 @@ class SeedanceVideoClient:
         if not self.api_key:
             raise RuntimeError("ARK_API_KEY not set.")
 
+        deadline = time.monotonic() + SUBMIT_DEADLINE_SECONDS
         # 1. 提交任务
         task_id = self._submit_task(prompt, image_path, model, duration, **kwargs)
-        
-        # 2. 轮询等待
-        video_url = self._poll_until_done(task_id)
-        
+        self._check_deadline(deadline, task_id)
+
+        # 2. 轮询等待。到总时限后自己失败，不等到 74 分钟被外部抢占。
+        video_url = self._poll_until_done(task_id, deadline=deadline)
+
         # 3. 下载视频
-        self._download_video(video_url, save_path)
-        
+        self._check_deadline(deadline, task_id)
+        remaining = max(1, int(deadline - time.monotonic()))
+        self._download_video(video_url, save_path, timeout=min(120, remaining))
+
         return video_url
 
     @staticmethod
@@ -172,15 +182,30 @@ class SeedanceVideoClient:
         self._download_video(url, save_path)
         return save_path
 
-    def _poll_until_done(self, task_id: str, max_polls: int = 120, interval: int = 5) -> str:
-        # 同步更新查询接口路径
+    @staticmethod
+    def _check_deadline(deadline: float, task_id: str) -> None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Seedance 视频生成超时 (task_id={task_id})")
+
+    def _poll_until_done(
+        self,
+        task_id: str,
+        max_polls: int = 120,
+        interval: int = 5,
+        deadline: Optional[float] = None,
+    ) -> str:
+        # 同步更新查询接口路径。deadline 是整次 submit 的单调时钟上限。
+        if deadline is None:
+            deadline = time.monotonic() + SUBMIT_DEADLINE_SECONDS
         url = f"{self.base_url}/contents/generations/tasks/{task_id}"
-        
+
         for i in range(max_polls):
+            self._check_deadline(deadline, task_id)
+            remaining = deadline - time.monotonic()
             resp = requests.get(
                 url,
                 headers=self._headers(),
-                timeout=30,
+                timeout=min(30, max(1, remaining)),
                 proxies=Config.requests_proxies("ark"),
             )
             resp.raise_for_status()
@@ -198,13 +223,14 @@ class SeedanceVideoClient:
                 raise RuntimeError(f"Seedance 视频生成{status}: {error_msg}")
             
             logger.debug(f"SeedanceVideoClient: 任务进行中 {task_id}, status={status}, poll={i+1}")
-            time.sleep(interval)
-            
+            self._check_deadline(deadline, task_id)
+            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
         raise TimeoutError(f"Seedance 视频生成超时 (task_id={task_id})")
 
-    def _download_video(self, url: str, save_path: str):
+    def _download_video(self, url: str, save_path: str, timeout: int = 120):
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        resp = requests.get(url, stream=True, timeout=120, proxies=Config.requests_proxies("ark"))
+        resp = requests.get(url, stream=True, timeout=timeout, proxies=Config.requests_proxies("ark"))
         resp.raise_for_status()
         with open(save_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):

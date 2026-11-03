@@ -439,6 +439,7 @@ def test_submit_error_redacts_the_ark_key(conn, monkeypatch):
         executor.confirm(project_id, "video")
     assert secret not in str(failed.value)
     assert "***" in str(failed.value)
+    assert failed.value.__cause__ is None
     assert _metadata(conn, project_id)["submit_error"] == "unauthorized ***"
     assert secret not in _metadata(conn, project_id)["submit_error"]
 
@@ -508,43 +509,48 @@ def test_concurrent_confirms_submit_and_spend_once(conn):
     assert not any(row["status"] == QUOTED for row in rows)
 
 
-def test_stale_submit_claim_can_be_confirmed_again(conn):
+def _stamp_running(conn, project_id, *, dispatched=False):
     from graph.model import NodeStatus
 
+    graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
+    if graph.node("video").status != NodeStatus.RUNNING:
+        graph.transition("video", NodeStatus.RUNNING)
+    if dispatched:
+        graph.update_metadata("video", submit_dispatched=True)
+    GraphStore.save(conn, project_id, graph.to_dict())
+    conn.execute(
+        """
+        UPDATE node_state SET status = ?, updated_at = ?
+        WHERE project_id = ? AND node_id = ?
+        """,
+        ("running", "2000-01-01T00:00:00.000000Z", project_id, "video"),
+    )
+
+
+def test_stale_submit_claim_can_be_confirmed_again(conn):
     project_id, hero = _ready_video(conn)
     _portrait(conn, hero["id"])
     GraphExecutor(conn).run_node(project_id, "video")
-    graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
-    graph.transition("video", NodeStatus.RUNNING)
-    GraphStore.save(conn, project_id, graph.to_dict())
-    conn.execute(
-        """
-        UPDATE node_state SET status = ?, updated_at = ?
-        WHERE project_id = ? AND node_id = ?
-        """,
-        ("running", "2000-01-01T00:00:00.000000Z", project_id, "video"),
-    )
-    conn.commit()
+    _stamp_running(conn, project_id, dispatched=True)
     released = GraphExecutor.recover_stale_submit_claims(conn)
     assert released == ["video"]
     assert _status(conn, project_id) == "awaiting_user"
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    assert "may have reached the vendor" in _metadata(conn, project_id)["submit_error"]
 
-    graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
-    graph.transition("video", NodeStatus.RUNNING)
-    GraphStore.save(conn, project_id, graph.to_dict())
-    conn.execute(
-        """
-        UPDATE node_state SET status = ?, updated_at = ?
-        WHERE project_id = ? AND node_id = ?
-        """,
-        ("running", "2000-01-01T00:00:00.000000Z", project_id, "video"),
-    )
-    conn.commit()
     adapter = RecordingAdapter()
-    done = GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    with pytest.raises(StorageError) as blocked:
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert adapter.calls == []
+    assert "may have reached the vendor" in str(blocked.value)
+    assert _status(conn, project_id) == "awaiting_user"
+    assert not any(row["status"] == SPENT for row in _video_rows(conn, project_id))
+
+    done = GraphExecutor(conn, video_adapter=adapter).retry_video_submit(project_id, "video")
     assert len(adapter.calls) == 1
     assert done["provider_called"] is True
     assert done["status"] == "done"
+    assert _metadata(conn, project_id).get("submit_dispatched") is None
     spent = [row for row in _video_rows(conn, project_id) if row["status"] == SPENT]
     assert len(spent) == 1
 
@@ -612,3 +618,131 @@ def test_impact_batch_provider_called_follows_the_video_node(conn):
     assert done["provider_called"] is True
     assert any(item.get("provider_called") is True for item in done["nodes"])
     assert len(adapter.calls) == 1
+
+
+def test_dispatched_marker_blocks_submit(conn):
+    project_id, _hero = _ready_video(conn)
+    GraphExecutor(conn).run_node(project_id, "video")
+    _stamp_running(conn, project_id, dispatched=True)
+    adapter = RecordingAdapter()
+    with pytest.raises(StorageError) as blocked:
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert adapter.calls == []
+    assert "retry_video_submit" in str(blocked.value)
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+    assert _status(conn, project_id) == "awaiting_user"
+
+
+def test_shrunk_ttl_does_not_let_a_second_confirm_submit(conn, monkeypatch):
+    import threading
+    import time
+
+    import core.executor as executor_module
+
+    monkeypatch.setattr(executor_module, "VIDEO_SUBMIT_CLAIM_TTL_SECONDS", 0)
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    data_dir = Database.data_dir_of(conn)
+    calls = []
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+
+    class SlowAdapter:
+        def submit(self, spec, params, *, transport=None):
+            with lock:
+                calls.append(spec.id)
+            entered.set()
+            assert release.wait(5)
+            raise RuntimeError("first attempt failed after the claim went stale")
+
+    def worker():
+        connection = Database.connect(data_dir)
+        try:
+            GraphExecutor(connection, video_adapter=SlowAdapter()).confirm(project_id, "video")
+        except StorageError:
+            pass
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    assert entered.wait(5)
+    time.sleep(0.05)
+    adapter = RecordingAdapter()
+    with pytest.raises(StorageError) as blocked:
+        GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert adapter.calls == []
+    assert calls == [SEEDANCE]
+    assert "may have reached the vendor" in str(blocked.value)
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert calls == [SEEDANCE]
+    assert _status(conn, project_id) == "awaiting_user"
+    assert _metadata(conn, project_id)["submit_dispatched"] is True
+
+
+def test_old_thread_failure_does_not_overwrite_done(conn):
+    project_id, hero = _ready_video(conn)
+    _portrait(conn, hero["id"])
+    GraphExecutor(conn).run_node(project_id, "video")
+    done = GraphExecutor(conn, video_adapter=RecordingAdapter()).confirm(project_id, "video")
+    assert done["status"] == "done"
+    payload = GraphStore.load(conn, project_id)
+    for node in payload["nodes"]:
+        if node["id"] == "video":
+            node["status"] = "running"
+    stale = DependencyGraph.from_dict(payload)
+    executor = GraphExecutor(conn)
+    executor._claim_stamps["video"] = "1999-01-01T00:00:00.000000Z"
+    executor._release_submit_claim(project_id, stale, "video")
+    assert _status(conn, project_id) == "done"
+    assert _metadata(conn, project_id)["result"]["result_id"] == RESULT_URL
+
+
+def test_ready_quote_is_claimed_instead_of_left_dangling(conn):
+    from models.middle.budget import ProjectBudget
+
+    project_id, hero = _ready_video(conn, cap=10)
+    _portrait(conn, hero["id"])
+    paused = GraphExecutor(conn).run_node(project_id, "video")
+    assert paused["gate"] == "confirm"
+    held = GraphExecutor(conn).confirm(project_id, "video")
+    assert held["gate"] == "budget"
+    ProjectBudget.raise_cap(conn, project_id, held["entry_id"], 80)
+    state = conn.execute(
+        "SELECT status FROM node_state WHERE project_id = ? AND node_id = ?",
+        (project_id, "video"),
+    ).fetchone()
+    assert state["status"] == "ready"
+    adapter = RecordingAdapter()
+    done = GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "video")
+    assert len(adapter.calls) == 1
+    assert done["status"] == "done"
+    assert done["spent"] is True
+    spent = [row for row in _video_rows(conn, project_id) if row["status"] == SPENT]
+    assert len(spent) == 1
+    assert spent[0]["actual_amount"] == 70.0
+
+
+def test_poll_deadline_is_under_the_claim_ttl_and_stops(monkeypatch):
+    import time
+
+    import models.video_seedance as video_seedance
+    from core.executor import VIDEO_SUBMIT_CLAIM_TTL_SECONDS
+
+    assert video_seedance.SUBMIT_DEADLINE_SECONDS == 20 * 60
+    assert video_seedance.SUBMIT_DEADLINE_SECONDS < VIDEO_SUBMIT_CLAIM_TTL_SECONDS
+    calls = []
+
+    def fake_get(*_args, **_kwargs):
+        calls.append(1)
+        raise AssertionError("poll got past the deadline")
+
+    monkeypatch.setattr(video_seedance.requests, "get", fake_get)
+    client = video_seedance.SeedanceVideoClient(api_key="x", base_url="https://example.invalid")
+    with pytest.raises(TimeoutError):
+        client._poll_until_done("task-1", deadline=time.monotonic() - 1)
+    assert calls == []
