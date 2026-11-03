@@ -441,7 +441,7 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 这些是当前代码的行为，不是还没写上的路由。
 
 - 图像、VLM、TTS 在 `run` 里仍按 `quote.max` 入账，`provider_called` 为 false。前端在节点 `done` 且 `provider_called === false`（节点上或 `metadata.result` 上）时显示 `已记账·未调用厂商`（`episodeFlow.ts` 的 `OFFLINE_BADGE`）。视频节点没有这道离线入账，除非 `allow_offline_video=True`。
-- `POST /api/sandbox/video` 直接调 `VideoClient`，不经过项目预算，也不看 4–30 秒的图规则。
+- `POST /api/sandbox/video` 的请求体没有 `project_id`。当前对所有请求返回 409：`沙盒视频需在项目内生成`。不调用 `VideoClient`，不入账。
 - `POST /api/v2/projects` 的图永远是一集 `ep1` 和上面那六条边。没有按用户集数生成图的参数。
 - `submit_dispatched` 落库之后，`stop` 仍拒绝该节点，不能取消已经可能发给厂商的调用。
 
@@ -479,7 +479,7 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 
 ## 临时工作台
 
-这些路由直接调用 LLM / VLM / 图像 / 视频客户端，不经过 `quote`、`confirm`、`ProjectBudget` 或提交标记。历史在 `backend/code/result/sandbox/history.json`。进行中的任务只在进程内存里。
+问答、看图、文生图、图生图直接调用对应客户端，不经过 `quote`、`confirm`、`ProjectBudget` 或提交标记。视频路由除外，见下节。历史在 `backend/code/result/sandbox/history.json`。进行中的任务只在进程内存里。
 
 失败时 HTTP 仍可能是 200，体为 `{"success": false, "error": "..."}`。
 
@@ -525,6 +525,6 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 
 ### `POST /api/sandbox/video`
 
-`{"model": "", "prompt": "", "image": null, "ratio": "16:9", "resolution": "720P", "duration": 5}`。`model`、`prompt` 必填。`duration` 默认 5，按调用方整数发给 `VideoClient`，不看模型的时长能力，也不走图执行器那条 4..30 秒的规则。
+`{"model": "", "prompt": "", "image": null, "ratio": "16:9", "resolution": "720P", "duration": 5}`。`model`、`prompt` 必填。请求体没有 `project_id`，处理函数也不读取额外字段。
 
-成功：`{"success": true, "result": "<客户端返回值>", "video_path": "< /code 相对路径>", "record_id": ""}`。文件在 `code/result/sandbox/videos/`。
+当前对所有通过校验的请求返回 409：`{"success": false, "error": "沙盒视频需在项目内生成"}`。不调用 `VideoClient`，不写历史，不入账。有项目的生成留到以后，本路由不新增 `project_id`。

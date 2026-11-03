@@ -8,6 +8,7 @@ from typing import List
 
 from fastapi import APIRouter
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 
 from api.schemas.sandbox import (
     SandboxI2IRequest,
@@ -380,61 +381,9 @@ async def sandbox_i2i(req: SandboxI2IRequest):
 
 @router.post("/api/sandbox/video")
 async def sandbox_video(req: SandboxVideoRequest):
-    """临时工作台 - 视频生成"""
-    from models.video_client import VideoClient
-    client = VideoClient()
-    duration = int(req.duration or 5)
-    input_data = {
-        "prompt": req.prompt,
-        "reference_image": req.image,
-        "ratio": req.ratio,
-        "resolution": req.resolution,
-        "duration": duration,
-    }
-    task_id = _start_active_task("video", req.model, input_data)
-    try:
-        # 生成唯一的保存路径
-        save_dir = os.path.join(SANDBOX_DIR, "videos")
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, f"{uuid.uuid4().hex[:8]}.mp4")
-        logger.info(
-            "Sandbox video started: model=%s image=%s ratio=%s resolution=%s duration=%ss",
-            req.model,
-            bool(req.image),
-            req.ratio,
-            req.resolution,
-            duration,
-        )
-
-        result = await run_in_threadpool(
-            client.generate_video,
-            prompt=req.prompt,
-            image_path=req.image or "",
-            save_path=save_path,
-            model=req.model,
-            duration=duration,
-            shot_type="multi",
-            video_ratio=req.ratio or "16:9",
-            resolution=req.resolution or "720P",
-        )
-        # 保存到历史记录
-        record_id = _add_record(
-            tool="video",
-            model=req.model,
-            input_data=input_data,
-            output_data={"video": result, "video_path": save_path},
-            files=[save_path],
-            record_id=task_id,
-        )
-        logger.info("Sandbox video completed: model=%s record_id=%s video=%s", req.model, record_id, save_path)
-        return {
-            "success": True,
-            "result": result,
-            "video_path": _converted_video_path(save_path),
-            "record_id": record_id,
-        }
-    except Exception as e:
-        logger.exception("Sandbox video failed: model=%s", req.model)
-        return {"success": False, "error": str(e)}
-    finally:
-        _finish_active_task(task_id)
+    """沙盒视频没有项目。请求体不含 project_id，所以这里一律拒绝，不调用厂商。"""
+    del req
+    return JSONResponse(
+        status_code=409,
+        content={"success": False, "error": "沙盒视频需在项目内生成"},
+    )
