@@ -539,6 +539,7 @@ export default function WorkflowPanel() {
         video_reference_model: params.video_reference_model,
         video_model: params.video_model,
         enable_concurrency: params.enable_concurrency,
+        chain_last_frame: params.chain_last_frame,
         web_search: params.web_search,
         expand_idea: params.expand_idea,
         episodes: params.episodes,
@@ -576,6 +577,7 @@ export default function WorkflowPanel() {
         scene_number: result.params?.scene_number,
         expand_idea: params.expand_idea,
         enable_concurrency: params.enable_concurrency,
+        chain_last_frame: params.chain_last_frame,
         web_search: params.web_search,
         episodes: params.episodes,
         auto_mode: useAutoMode,
@@ -1193,6 +1195,7 @@ export default function WorkflowPanel() {
           video_model: s.video_model || '',
           expand_idea: s.expand_idea || false,
           enable_concurrency: s.enable_concurrency || false,
+          chain_last_frame: s.chain_last_frame || false,
           web_search: s.web_search || false,
         });
       }
@@ -1262,6 +1265,7 @@ export default function WorkflowPanel() {
         video_ratio: projectParams.video_ratio,
         video_resolution: projectParams.video_resolution || '720P',
         enable_concurrency: projectParams.enable_concurrency || false,
+        chain_last_frame: projectParams.chain_last_frame || false,
         // web_search: projectParams.web_search || false,
         // expand_idea: projectParams.expand_idea || false,
       }

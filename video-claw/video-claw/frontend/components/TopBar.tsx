@@ -38,6 +38,7 @@ export interface ModelConfig {
   video_ratio: string;
   video_resolution: string;
   enable_concurrency: boolean;
+  chain_last_frame: boolean;
 }
 
 interface TopBarProps {
@@ -287,6 +288,15 @@ function ModelSelector({
               className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500/30"
             />
             <span className="text-gray-500">并发生成</span>
+          </label>
+          <label className="flex items-center gap-2 text-xs cursor-pointer select-none" title="同一集内按顺序生成，下一片段首帧使用上一片段所选视频的最后一帧">
+            <input
+              type="checkbox"
+              checked={!!config.chain_last_frame}
+              onChange={e => update('chain_last_frame', e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500/30"
+            />
+            <span className="text-gray-500">尾帧接续</span>
           </label>
         </div>
       )}

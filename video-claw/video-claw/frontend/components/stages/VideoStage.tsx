@@ -19,6 +19,7 @@ interface ClipItem {
   versions: string[];     // 所有历史版本路径
   status?: 'pending' | 'done' | 'failed' | 'running';
   rewrite_result?: RewriteResult;
+  stale?: boolean;
 }
 
 /* ─── 水平滚动视频画廊 ─── */
@@ -257,6 +258,12 @@ function ClipRow({
             <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] font-medium text-amber-700">
               <AlertTriangle className="w-3 h-3 flex-shrink-0" />
               未选择片段，将在后期阶段跳过本片段
+            </div>
+          )}
+          {clip.stale && (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] font-medium text-amber-700">
+              <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+              上一镜头已更新，本片段首帧可能已过期
             </div>
           )}
         </div>

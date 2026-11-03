@@ -12,10 +12,12 @@ import re
 import glob
 import asyncio
 import logging
+import threading
 from typing import Any, Optional, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .base_agent import AgentInterface
+from .last_frame_chain import LastFrameChain
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +400,9 @@ class VideoDirectorAgent(AgentInterface):
         return preview
 
     def _build_payload(self, sid: str, segments: list, video_clips: Optional[list] = None,
-                       rewrite_results: Optional[dict] = None) -> dict:
+                       rewrite_results: Optional[dict] = None, *,
+                       stale_ids: Optional[list] = None,
+                       fresh_ids: Optional[list] = None) -> dict:
         clips = []
         clip_map = {c.get("id"): c for c in (video_clips or []) if isinstance(c, dict) and c.get("id")}
         existing_rewrite_results = self._collect_rewrite_results(video_clips)
@@ -422,6 +426,14 @@ class VideoDirectorAgent(AgentInterface):
             rewrite_result = rewrite_results.get(segment_id) or existing_rewrite_results.get(segment_id)
             if rewrite_result:
                 item["rewrite_result"] = rewrite_result
+            existing_clip = clip_map.get(segment_id)
+            prior_stale = isinstance(existing_clip, dict) and bool(existing_clip.get("stale"))
+            fresh = set(fresh_ids) if fresh_ids is not None else None
+            stale = set(stale_ids or [])
+            if fresh is not None and segment_id in fresh:
+                item["stale"] = False
+            elif segment_id in stale or prior_stale:
+                item["stale"] = True
             clips.append(item)
         return {
             "payload": {
@@ -430,6 +442,195 @@ class VideoDirectorAgent(AgentInterface):
             },
             "stage_completed": True,
         }
+
+    def _generate_chain(
+        self,
+        *,
+        sid: str,
+        segments: list,
+        scene_map: dict,
+        clip_map: dict,
+        character_art: dict,
+        style_prompt: str,
+        video_generation_mode: str,
+        video_model: str,
+        video_sound: str,
+        video_shot_type: str,
+        video_ratio: str,
+        video_resolution: str,
+        llm_model: str,
+        concurrency: int,
+        rewrite_results_map: dict,
+        use_saved_prompt: bool,
+        only_ids: Optional[set] = None,
+    ) -> List[str]:
+        """Generate episode by episode. Episodes stay parallel; shots inside one do not.
+
+        Returns the segment ids that produced a new file. only_ids restricts
+        regeneration; None generates every segment that does not already have a file.
+        """
+        segment_map = {
+            seg.get("segment_id"): seg
+            for seg in segments
+            if isinstance(seg, dict) and seg.get("segment_id")
+        }
+
+        def reference_for(seg: dict) -> str:
+            return self._get_reference_image(sid, seg["segment_id"], scene_map)
+
+        plans = LastFrameChain.plan_first_frames(
+            segments, chain=True, sid=sid, reference_for=reference_for,
+        )
+        grouped: Dict[int, list] = {}
+        for plan in plans:
+            grouped.setdefault(plan["parallel_group"], []).append(plan)
+
+        def needs_work(plan: dict) -> bool:
+            if only_ids is not None:
+                return plan["segment_id"] in only_ids
+            return not self._list_versions(sid, plan["segment_id"])
+
+        groups = [grouped[key] for key in sorted(grouped) if any(needs_work(plan) for plan in grouped[key])]
+        total = sum(1 for group in groups for plan in group if needs_work(plan))
+        if total == 0:
+            if only_ids is None:
+                self._report_progress("视频生成", "所有视频片段已存在", 95)
+            return []
+
+        generated: List[str] = []
+        state_lock = threading.Lock()
+        done = 0
+
+        def run_group(group: list) -> None:
+            nonlocal done
+            produced: Dict[str, str] = {}
+            for plan in group:
+                seg_id = plan["segment_id"]
+                seg = segment_map.get(seg_id)
+                if not seg:
+                    continue
+                if self.cancellation_check and self.cancellation_check():
+                    return
+                existing = self._list_versions(sid, seg_id)
+                if not needs_work(plan):
+                    chosen = LastFrameChain.selected_video_path(clip_map.get(seg_id), existing)
+                    if chosen:
+                        produced[seg_id] = chosen
+                    continue
+
+                prompt = self._assemble_prompt(
+                    seg,
+                    style_prompt,
+                    character_art,
+                    video_data=clip_map.get(seg_id) if use_saved_prompt else None,
+                )
+                img_path = plan["reference_path"]
+                prev_id = plan.get("prev_id")
+                if plan.get("chained") and prev_id:
+                    prev_video = produced.get(prev_id) or LastFrameChain.selected_video_path(
+                        clip_map.get(prev_id),
+                        self._list_versions(sid, prev_id),
+                    )
+                    if prev_video:
+                        frame_path = plan["img_path"]
+                        try:
+                            from pipelines.utils import extract_last_frame
+                            extract_last_frame(prev_video, frame_path)
+                            if os.path.exists(frame_path):
+                                img_path = frame_path
+                        except Exception as exc:
+                            logger.warning(
+                                "VideoDirectorAgent: %s 尾帧抽取失败，回退参考图: %s",
+                                seg_id, exc,
+                            )
+                    else:
+                        logger.warning(
+                            "VideoDirectorAgent: %s 缺少上一片段所选视频，回退参考图",
+                            seg_id,
+                        )
+
+                reference_image_paths = None
+                duration = seg.get("total_duration", 10)
+                seg_index = segments.index(seg)
+                last_img_path = self._get_next_reference_image(sid, seg_index, segments, scene_map)
+                if video_generation_mode == "start_end_frame" and not last_img_path:
+                    logger.warning(
+                        "VideoDirectorAgent: %s 首尾帧模式缺少尾帧，回退为首帧生视频入参",
+                        seg_id,
+                    )
+                running = {
+                    "type": "clips",
+                    "id": seg_id,
+                    "status": "running",
+                }
+                if only_ids is not None:
+                    running["versions"] = existing
+                self._report_progress("视频生成", f"启动生成: {seg_id}", 5, data={
+                    "asset_complete": running,
+                })
+                try:
+                    _, res_path, rewrite_result = self._generate_one(
+                        sid, seg_id, prompt,
+                        img_path, video_model, duration,
+                        video_sound, video_shot_type, video_ratio, video_resolution,
+                        video_generation_mode, last_img_path, reference_image_paths, llm_model,
+                    )
+                except Exception as exc:
+                    logger.error(f"Video future error for {seg_id}: {exc}")
+                    res_path = None
+                    rewrite_result = None
+                if rewrite_result:
+                    with state_lock:
+                        rewrite_results_map[seg_id] = rewrite_result
+                if res_path:
+                    produced[seg_id] = res_path
+                    with state_lock:
+                        generated.append(seg_id)
+                        done += 1
+                        pct = 5 + int(90 * done / max(1, total))
+                    versions = self._list_versions(sid, seg_id)
+                    asset_complete = {
+                        "type": "clips", "id": seg_id,
+                        "status": "done",
+                        "selected": res_path,
+                        "versions": versions,
+                    }
+                    if rewrite_results_map.get(seg_id):
+                        asset_complete["rewrite_result"] = rewrite_results_map[seg_id]
+                    self._report_progress("视频生成", f"完成: {seg_id}", pct, data={
+                        "asset_complete": asset_complete,
+                    })
+                else:
+                    chosen = LastFrameChain.selected_video_path(clip_map.get(seg_id), existing)
+                    if chosen:
+                        produced[seg_id] = chosen
+                    with state_lock:
+                        done += 1
+                        pct = 5 + int(90 * done / max(1, total))
+                    asset_complete = {
+                        "type": "clips", "id": seg_id,
+                        "status": "failed",
+                        "selected": "", "versions": [],
+                    }
+                    if rewrite_results_map.get(seg_id):
+                        asset_complete["rewrite_result"] = rewrite_results_map[seg_id]
+                    self._report_progress("视频生成", f"失败: {seg_id}", pct, data={
+                        "asset_complete": asset_complete,
+                    })
+
+        with ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [executor.submit(run_group, group) for group in groups]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error(f"Video chain episode error: {exc}")
+                if self.cancellation_check and self.cancellation_check():
+                    for pending in futures:
+                        if not pending.done():
+                            pending.cancel()
+                    break
+        return generated
 
     def _update_session_video_data(self, sid: str, segments: list, style_prompt: str) -> None:
         """保留兼容入口；session 状态统一由 WorkflowEngine 持久化。"""
@@ -507,11 +708,52 @@ class VideoDirectorAgent(AgentInterface):
         }
         style_name = style_map_zh.get(style_zh, style_zh)
         style_prompt = self._get_style_prompt(style_zh)
+        chain_active = LastFrameChain.active(input_data.get("chain_last_frame"), video_generation_mode)
+        clip_map = {
+            clip.get("id"): clip
+            for clip in video_clips
+            if isinstance(clip, dict) and clip.get("id")
+        }
 
         # ═══ 介入：重新生成指定片段 ═══
         if intervention:
             regen_ids = intervention.get("regenerate_clips", [])
             if regen_ids:
+                if intervention.get("cascade"):
+                    regen_ids = LastFrameChain.expand_cascade(list(regen_ids), segments, True)
+                    intervention["regenerate_clips"] = regen_ids
+                if chain_active:
+                    self._report_progress("视频生成", "重新生成中...", 5)
+
+                    def chain_regen():
+                        self._generate_chain(
+                            sid=sid,
+                            segments=segments,
+                            scene_map=scene_map,
+                            clip_map=clip_map,
+                            character_art=character_art,
+                            style_prompt=style_prompt,
+                            video_generation_mode=video_generation_mode,
+                            video_model=video_model,
+                            video_sound=video_sound,
+                            video_shot_type=video_shot_type,
+                            video_ratio=video_ratio,
+                            video_resolution=video_resolution,
+                            llm_model=llm_model,
+                            concurrency=concurrency,
+                            rewrite_results_map=rewrite_results_map,
+                            use_saved_prompt=True,
+                            only_ids=set(regen_ids),
+                        )
+
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, chain_regen)
+                    self._update_session_video_data(sid, segments, style_prompt)
+                    return self._build_payload(
+                        sid, segments, video_clips, rewrite_results_map,
+                        stale_ids=LastFrameChain.stale_ids(regen_ids, segments),
+                        fresh_ids=list(regen_ids),
+                    )
                 self._report_progress("视频生成", "重新生成中...", 5)
                 segment_map = {s['segment_id']: s for s in segments}
                 clip_map = {c['id']: c for c in video_clips}
@@ -602,7 +844,30 @@ class VideoDirectorAgent(AgentInterface):
         preview = self._build_preview(sid, segments, scene_map, video_clips)
         self._report_progress("视频生成", "加载视频列表", 5, data={"assets_preview": {"clips": preview}})
 
+        generated_ids: List[str] = []
+
         def run():
+            if chain_active:
+                generated_ids.extend(self._generate_chain(
+                    sid=sid,
+                    segments=segments,
+                    scene_map=scene_map,
+                    clip_map=clip_map,
+                    character_art=character_art,
+                    style_prompt=style_prompt,
+                    video_generation_mode=video_generation_mode,
+                    video_model=video_model,
+                    video_sound=video_sound,
+                    video_shot_type=video_shot_type,
+                    video_ratio=video_ratio,
+                    video_resolution=video_resolution,
+                    llm_model=llm_model,
+                    concurrency=concurrency,
+                    rewrite_results_map=rewrite_results_map,
+                    use_saved_prompt=False,
+                    only_ids=None,
+                ))
+                return
             tasks = []
             for seg_index, seg in enumerate(segments):
                 seg_id = seg["segment_id"]
@@ -689,4 +954,10 @@ class VideoDirectorAgent(AgentInterface):
         self._update_session_video_data(sid, segments, style_prompt)
         
         self._report_progress("视频生成", "完成", 100)
+        if chain_active:
+            return self._build_payload(
+                sid, segments, video_clips, rewrite_results_map,
+                stale_ids=LastFrameChain.stale_ids(generated_ids, segments),
+                fresh_ids=generated_ids,
+            )
         return self._build_payload(sid, segments, video_clips, rewrite_results_map)

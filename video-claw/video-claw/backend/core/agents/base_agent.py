@@ -14,7 +14,7 @@ SESSION_PARAM_KEYS = [
     "llm_model", "vlm_model",
     "image_t2i_model", "image_it2i_model", "video_model",
     "video_first_frame_model", "video_start_end_model", "video_reference_model",
-    "video_generation_mode",
+    "video_generation_mode", "chain_last_frame",
     "video_style", "expand_idea", "enable_concurrency", "web_search", "episodes"
 ]
 
