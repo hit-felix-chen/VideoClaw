@@ -429,7 +429,7 @@ api_providers:
     enable_proxy: false
   deepseek:
     api_key: your_deepseek_key
-    base_url: https://api.deepseek.com/v1
+    base_url: https://api.deepseek.com
     enable_proxy: false
   dashscope:
     api_key: your_dashscope_key
@@ -445,13 +445,13 @@ api_providers:
     enable_proxy: false
 
 models:
-  llm: qwen3.5-plus
-  vlm: qwen3.5-plus
+  llm: deepseek-flash
+  vlm: qwen3.7-plus
   image_t2i: doubao-seedream-5-0-260128
   image_it2i: doubao-seedream-5-0-260128
   video: wan2.7-i2v
   video_ratio: '16:9'
-  eval: qwen3.5-plus
+  eval: qwen3.7-plus
 ```
 
 <!-- `api_providers.common.proxy` is the only proxy address. Each provider decides whether to use it via `enable_proxy`, which is disabled by default, so different model calls in the same process do not pollute each other. Changes to service startup fields such as `server.host` and `server.port` require restarting the backend to fully take effect. API keys, proxy settings, and main-workflow defaults under `models` are read by new project creation and model calls. -->
@@ -473,13 +473,13 @@ You only need to fill in the provider keys required by the models you choose. Fo
 
 | Type | Models |
 |:---:|:---|
-| **LLM** | qwen3.6-max-preview, qwen3-max, deepseek-chat, deepseek-reasoner, deepseek-v4-flash, deepseek-v4-pro, gpt-4o, gpt-5, gpt-5.4, gemini-2.5-flash, gemini-2.0-flash, kimi-k2.6 |
-| **VLM** | qwen3.6-plus, qwen3.6-flash, kimi-k2.6, gpt-5.4, gemini-2.5-flash-image, gemini-2.0-flash |
+| **LLM** | deepseek-flash (default; display name deepseek-4.1-flash). Other official ids live on ModelRegistry. |
+| **VLM** | qwen3.7-plus (default). Other official vision ids live on ModelRegistry. |
 | **Text-to-Image** | wan2.7-image, wan2.7-image-pro, wan2.6-t2i, doubao-seedream-5.0/4.5/4.0, gpt-image-2 |
 | **Image-to-Image** | wan2.7-image, wan2.7-image-pro, doubao-seedream-5.0/4.5/4.0, gpt-image-2 |
 | **Video Generation** | wan2.7-i2v, wan2.6-i2v-flash, doubao-seedance-2.0 (Normal/Fast), kling-v3/v2.6/v2.5 |
 
-Model information is defined in `video-claw/video-claw/backend/models/config_model.py`. The frontend filters models by capability tags, such as text generation, image generation, and image-to-video.
+Model ids and prices live on `ModelRegistry` (`models/middle`, official prices in `vendor_models.json`, fetched 2026-11-03). Some media capability rows remain in `config_model.py`. The frontend filters models by capability tags.
 
 </details>
 

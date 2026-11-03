@@ -77,7 +77,7 @@ class GPTVLClient:
         }
         return mime_types.get(ext, "image/jpeg")
 
-    def chat(self, text: str, images: List[str], model: str = "gpt-5.4",
+    def chat(self, text: str, images: List[str], model: str = "gpt-6-luna",
              parameters: Optional[Dict] = None) -> str:
         """
         使用 GPT 进行多模态对话（文本+图片）

@@ -40,6 +40,9 @@ class ModelRegistry:
 
         for spec in (SpecCatalog.seedance_25(), SpecCatalog.edge_tts()):
             ModelRegistry._specs[spec.id] = spec
+        from models.middle.official import apply_official
+
+        apply_official(ModelRegistry._specs)
 
     @staticmethod
     def all() -> list:

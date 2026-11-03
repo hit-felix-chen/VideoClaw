@@ -46,8 +46,8 @@ class ProjectPayloads:
     def start_body(**overrides) -> dict:
         body = {
             "idea": "一个用于测试的想法",
-            "llm_model": "deepseek-chat",
-            "vlm_model": "qwen3.5-plus",
+            "llm_model": "deepseek-flash",
+            "vlm_model": "qwen3.7-plus",
             "image_t2i_model": "doubao-seedream-5-0-260128",
             "image_it2i_model": "doubao-seedream-5-0-260128",
             "video_model": "wan2.7-i2v",

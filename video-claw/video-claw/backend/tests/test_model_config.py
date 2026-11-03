@@ -19,8 +19,9 @@ PRICE_KEYS = (
 class TestModelConfig:
     def test_registry_has_prices_for_every_model(self):
         models = MODEL_CONFIG["models"]
-        assert "deepseek-chat" in models
-        assert "wan2.7-i2v" in models or any("video" in (meta.get("type") or []) for meta in models.values())
+        assert "wan2.7-i2v" in models
+        assert "deepseek-chat" not in models
+        assert "qwen3.6-max-preview" not in models
         for model_id, metadata in models.items():
             assert metadata["name"]
             assert metadata["provider"]
@@ -33,11 +34,10 @@ class TestModelConfig:
                 assert metadata[key] >= 0
 
     def test_get_model_config_returns_the_registered_price(self):
-        registered = MODEL_CONFIG["models"]["deepseek-chat"]
-        loaded = get_model_config("deepseek-chat")
-        assert loaded["price_per_1k_input_token"] == registered["price_per_1k_input_token"] == 0.002
-        assert loaded["price_per_1k_output_token"] == 0.008
-        assert loaded["provider"] == "deepseek"
+        registered = MODEL_CONFIG["models"]["wan2.7-image"]
+        loaded = get_model_config("wan2.7-image")
+        assert loaded["price_per_image"] == registered["price_per_image"] == 0.2
+        assert loaded["provider"] == "dashscope"
 
         video_id = next(
             model_id
@@ -60,9 +60,11 @@ class TestModelConfig:
             assert loaded["provider"] == metadata["provider"]
 
     def test_loose_alias_still_exposes_a_real_price(self):
-        loaded = get_model_config("models/deepseek-chat")
-        assert loaded["name"] == "DeepSeek Chat"
-        assert loaded["price_per_1k_input_token"] == 0.002
+        loaded = get_model_config("models/deepseek-flash")
+        assert loaded["id"] == "deepseek-flash"
+        assert loaded["name"] == "deepseek-4.1-flash"
+        alias = get_model_config("deepseek-4.1-flash")
+        assert alias["id"] == "deepseek-flash"
 
     def test_unknown_model_is_a_stub_without_a_price(self):
         loaded = get_model_config("not-a-real-model-xyz")
@@ -81,14 +83,15 @@ class TestModelConfig:
         assert loaded["concurrency"] == 3
 
     def test_concurrency_switch(self):
-        assert get_max_concurrency("deepseek-chat", enable_concurrency=False) == 1
-        assert get_max_concurrency("deepseek-chat", enable_concurrency=True) == 10
+        assert get_max_concurrency("deepseek-flash", enable_concurrency=False) == 1
+        assert get_max_concurrency("deepseek-flash", enable_concurrency=True) == 10
         assert get_max_concurrency("not-a-real-model-xyz", enable_concurrency=True) == 3
 
     def test_models_by_type_and_parse_api_model(self):
         llm_ids = {item["id"] for item in get_models_by_type("llm")}
-        assert "deepseek-chat" in llm_ids
+        assert "deepseek-flash" in llm_ids
+        assert "deepseek-chat" not in llm_ids
         assert all("llm" in item["type"] for item in get_models_by_type("llm"))
         assert parse_api_model("api/dashscope/wan2.7-i2v", "video") == ("dashscope", "wan2.7-i2v")
-        provider, model_id = parse_api_model("deepseek-chat", "image")
-        assert provider == "" and model_id == "deepseek-chat"
+        provider, model_id = parse_api_model("deepseek-flash", "image")
+        assert provider == "" and model_id == "deepseek-flash"

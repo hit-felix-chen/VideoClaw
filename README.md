@@ -445,7 +445,7 @@ api_providers:
     enable_proxy: false
   deepseek:
     api_key: your_deepseek_key
-    base_url: https://api.deepseek.com/v1
+    base_url: https://api.deepseek.com
     enable_proxy: false
   dashscope:
     api_key: your_dashscope_key
@@ -461,8 +461,8 @@ api_providers:
     enable_proxy: false
 
 models:
-  llm: qwen3.5-plus
-  vlm: qwen3.5-plus
+  llm: deepseek-flash
+  vlm: qwen3.7-plus
   image_t2i: doubao-seedream-5-0-260128
   image_it2i: doubao-seedream-5-0-260128
   video: wan2.7-i2v
@@ -496,13 +496,13 @@ generation:
 
 |        类型        | 模型                                                                                                                                                                        |
 | :----------------: | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|   **LLM**   | qwen3.6-max-preview, qwen3-max, deepseek-chat, deepseek-reasoner, deepseek-v4-flash, deepseek-v4-pro, gpt-4o, gpt-5, gpt-5.4, gemini-2.5-flash, gemini-2.0-flash, kimi-k2.6 |
-|   **VLM**   | qwen3.6-plus, qwen3.6-flash, kimi-k2.6, gpt-5.4, gemini-2.5-flash-image, gemini-2.0-flash                                                                                   |
+|   **LLM**   | deepseek-flash（默认；显示名 deepseek-4.1-flash），其余官方 id 以 ModelRegistry 为准 |
+|   **VLM**   | qwen3.7-plus（默认），其余官方视觉 id 以 ModelRegistry 为准                                                                                                                 |
 |  **文生图**  | wan2.7-image, wan2.7-image-pro, wan2.6-t2i, doubao-seedream-5.0/4.5/4.0, gpt-image-2                                                                                        |
 |  **图生图**  | wan2.7-image, wan2.7-image-pro, doubao-seedream-5.0/4.5/4.0, gpt-image-2                                                                                                    |
 | **视频生成** | 首帧生视频：wan2.7-i2v, wan2.6-i2v-flash, doubao-seedance-2.0 (Normal/Fast), kling-v3/v2.6/v2.5；首尾帧生视频：wan2.7-i2v 等支持首尾帧输入的模型；参考图生视频：wan2.7-r2v 等支持参考图输入的模型。 |
 
-模型信息以 `video-claw/video-claw/backend/models/config_model.py` 为准。前端会根据模型能力标签筛选模型，例如文本生成、图像生成、图生视频。
+模型 id 与标价以 `ModelRegistry` 为准（`models/middle`，官方价在 `vendor_models.json`，抓取日 2026-11-03）。媒体能力表仍有一部分在 `config_model.py`。前端按能力标签筛选模型。
 
 </details>
 

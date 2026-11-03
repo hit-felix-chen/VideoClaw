@@ -41,8 +41,8 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
   "idea": "故事线描述",
   "style": "anime",
   "episodes": 4,
-  "llm_model": "deepseek-v3.2",
-  "vlm_model": "qwen3.5-plus",
+  "llm_model": "deepseek-flash",
+  "vlm_model": "qwen3.7-plus",
   "image_t2i_model": "doubao-seedream-5-0-260128",
   "image_it2i_model": "doubao-seedream-5-0-260128",
   "video_model": "wan2.7-i2v",
@@ -71,8 +71,8 @@ MovieAssistant 是一个 AI 视频生成系统，提供 REST API 供外部调用
   "params": {
     "idea": "故事线描述",
     "style": "anime",
-    "llm_model": "deepseek-v3.2",
-    "vlm_model": "qwen3.5-plus",
+    "llm_model": "deepseek-flash",
+    "vlm_model": "qwen3.7-plus",
     "episodes": 4
   }
 }

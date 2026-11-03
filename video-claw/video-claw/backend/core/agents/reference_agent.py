@@ -282,7 +282,7 @@ class ReferenceGeneratorAgent(AgentInterface):
     def _generate_one(self, img_client, sid: str, segment: dict,
                       first_frame_prompt: str, refs: List[str],
                       style: str, it2i_model: str, t2i_model: str,
-                      video_ratio: str = "16:9", resolution: str = "1080P", vlm_model: str = "qwen3.5-plus",
+                      video_ratio: str = "16:9", resolution: str = "1080P", vlm_model: str = "qwen3.7-plus",
                       character_description: str = "", setting_description: str = "",
                       llm_model: str = "",
                       max_versions: int = 3) -> tuple:
@@ -423,7 +423,7 @@ class ReferenceGeneratorAgent(AgentInterface):
 
     def _select_best_with_vlm(self, image_paths: List[str], segment: dict, plot: str, visual_prompt: str,
                               character_description: str = "", setting_description: str = "",
-                              vlm_model: str = "qwen3.5-plus") -> tuple:
+                              vlm_model: str = "qwen3.7-plus") -> tuple:
         """使用 VLM 从多个版本中选择最好的一张"""
         from models.vlm_client import VLM
 
@@ -485,7 +485,7 @@ class ReferenceGeneratorAgent(AgentInterface):
 
     def _evaluate_with_vlm(self, image_path: str, segment: dict, plot: str, visual_prompt: str,
                           character_description: str = "", setting_description: str = "",
-                          vlm_model: str = "qwen3.5-plus") -> dict:
+                          vlm_model: str = "qwen3.7-plus") -> dict:
         """使用 VLM 评估首帧参考图"""
         try:
             from models.vlm_client import VLM

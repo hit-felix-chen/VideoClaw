@@ -69,7 +69,7 @@ class GeminiVLClient:
         }
         return mime_types.get(ext, "image/jpeg")
 
-    def chat(self, text: str, images: List[str], model: str = "gemini-2.5-flash-image",
+    def chat(self, text: str, images: List[str], model: str = "gemini-3.8-flash",
              parameters: Optional[Dict] = None) -> str:
         """
         使用 Gemini 进行多模态对话（文本+图片）

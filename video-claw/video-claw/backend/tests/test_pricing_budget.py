@@ -84,8 +84,11 @@ def conn(tmp_path):
 def test_price_table_uses_documented_rows_only():
     rows = PriceBook.table()
     assert rows
-    assert {row["model_id"] for row in rows} == {SEEDANCE}
-    for row in rows:
+    assert all(str(row["source_url"]).startswith("https://") for row in rows)
+    assert all(row["fetched"] for row in rows)
+    seed_rows = [row for row in rows if row["model_id"] == SEEDANCE]
+    assert seed_rows
+    for row in seed_rows:
         assert row["unit"] == PriceUnit.PER_MILLION_TOKENS
         assert row["currency"] == "CNY"
         assert row["resolution"] in {"480p", "720p", "1080p"}
@@ -93,12 +96,15 @@ def test_price_table_uses_documented_rows_only():
         assert row["effective_date"] is None
         assert row["source_url"] == PRICE_DOC
         assert row["verified"] is True
-    resolutions = {row["resolution"] for row in rows}
+        assert row["fetched"] == "2026-11-03"
+    resolutions = {row["resolution"] for row in seed_rows}
     assert resolutions == {"480p", "720p", "1080p"}
     assert any("effective_date" in item for item in SEEDANCE_25_TODO)
     assert "wan2.7-image" in PriceBook.unknown_models()
     assert "edge-tts" in PriceBook.unknown_models()
-    assert "deepseek-chat" in PriceBook.unknown_models()
+    assert "deepseek-chat" not in PriceBook.unknown_models()
+    assert "deepseek-flash" not in PriceBook.unknown_models()
+    assert "qwen3.7-plus" not in PriceBook.unknown_models()
     assert SEEDANCE not in PriceBook.unknown_models()
     assert any(note.startswith("TODO: wan2.7-image") for note in PriceBook.price_todos())
     assert any(note.startswith("TODO: edge-tts") for note in PriceBook.price_todos())

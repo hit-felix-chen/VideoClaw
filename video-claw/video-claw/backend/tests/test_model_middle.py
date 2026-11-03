@@ -33,7 +33,7 @@ class TestIdsAndPrices:
         assert get_model_config("deepseek")["provider"] == "unknown"
         assert get_model_config("chat")["provider"] == "unknown"
         assert ModelRegistry.get("doubao-seedance-2-5") is None
-        assert get_model_config("models/deepseek-chat")["name"] == "DeepSeek Chat"
+        assert get_model_config("models/deepseek-flash")["name"] == "deepseek-4.1-flash"
 
     def test_explicit_seedance_alias_is_exact(self):
         spec = ModelRegistry.get("doubao-seedance-2.5")
@@ -166,10 +166,9 @@ class TestRegistryBehavior:
         assert all(price.currency is None and price.verified is False for price in spec.prices)
         assert PriceBook.quote("wan2.7-image").unit == PriceUnit.PER_IMAGE
         assert PriceBook.quote("wan2.7-image").amount == 0.2
-        assert PriceBook.cost("deepseek-chat", quantity=1000) is None
-        tokens = PriceBook.cost("deepseek-chat", unit=PriceUnit.PER_1K_INPUT_TOKEN, quantity=1000)
-        assert tokens.total == 0.002
-        assert tokens.currency is None
+        assert PriceBook.cost("wan2.7-i2v", quantity=10).total == 8.0
+        assert PriceBook.cost("wan2.7-i2v", quantity=10).currency is None
+        assert PriceBook.cost("wan2.7-i2v", quantity=10).verified is False
 
     def test_edge_tts_is_a_modality_without_a_price(self):
         spec = ModelRegistry.get("edge-tts")
@@ -191,8 +190,10 @@ class TestRegistryBehavior:
         assert messages[1]["content"][1]["type"] == "image_url"
         base_url, _api_key = OpenAICompatibleAdapter.endpoint("openai")
         assert base_url == Config.OPENAI_BASE_URL
-        deepseek = ModelRegistry.get("deepseek-chat")
+        deepseek = ModelRegistry.get("deepseek-flash")
         assert isinstance(ModelRegistry.adapter_for(deepseek, "llm"), OpenAICompatibleAdapter)
+        assert ModelRegistry.adapter_for(ModelRegistry.get("gemini-omni-1.1-flash"), "llm") is None
+        assert ModelRegistry.adapter_for(ModelRegistry.get("kling-v3"), "llm") is None
 
     def test_default_reference_model(self):
         assert Config.VIDEO_REFERENCE_MODEL == SEEDANCE
@@ -322,12 +323,12 @@ class TestApiModelsMiddle:
         speech = client.get("/api/models", params={"model_type": "tts"})
         assert speech.status_code == 200
         edge = speech.json()["models"]
-        assert [item["id"] for item in edge] == ["edge-tts"]
-        assert edge[0]["pricing"] == []
-        assert edge[0]["currency"] is None
-        assert edge[0]["model_type"] == "tts"
+        edge_row = next(item for item in edge if item["id"] == "edge-tts")
+        assert edge_row["pricing"] == []
+        assert edge_row["currency"] is None
+        assert edge_row["model_type"] == "tts"
 
         llm = client.get("/api/models", params={"model_type": "llm"})
-        sample = next(item for item in llm.json()["models"] if item["id"] == "deepseek-chat")
+        sample = next(item for item in llm.json()["models"] if item["id"] == "deepseek-flash")
         assert "text_generation" in sample["ability_types"]
         assert "currency" in sample
