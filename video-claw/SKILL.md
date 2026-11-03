@@ -100,7 +100,7 @@ HTTP 的视频 `confirm`、`retry_video_submit` 和 `raise` 在没有注入适�
 
 普通 `confirm` 在 `submit_dispatched` 已经写上时不会再次 POST。标记只有在 `submit` 已经开始、随后又被判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是上面的 HTTP 409。这时报价改为 `skipped`。轮询、下载、供应商 failed/expired、所有 HTTP 4xx 都保留标记。4xx 体里若有 id，会记成 `vendor_task_id`。
 
-手动重试是 `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`。省略请求体或 `force_new` 为 false（含字符串 `"false"`）是续接。只有 JSON `true` 或 Pydantic 当成 true 的 `"true"` 才释放旧报价并重新授权、然后新开。`confirm` 里出现 `force_new` 一律 400；JSON `null` 目前是 422。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。进程启动会回收过期认领；没有过期行时再启动一次是空操作。细节见 confirm_video.md。
+手动重试是 `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`。省略请求体是续接。`force_new` 按 Pydantic 的 `bool` 解析：JSON `true`、`1`，以及 `"true"` / `"True"` / `"yes"` / `"on"` / `"1"` / `"y"` / `"t"`（大小写不限）才释放旧报价并重新授权、然后新开；JSON `false`、`0`，以及 `"false"` / `"no"` / `"off"` / `"0"` / `"n"` / `"f"` 仍是续接。`null` 是 422。前端送布尔值。`confirm` 里出现 `force_new` 一律 400。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。进程启动会回收过期认领；没有过期行时再启动一次是空操作。细节见 confirm_video.md。
 
 `impact/confirm` 和 `impact/regenerate` 在无密钥时仍会入账，界面可显示「已记账·未调用厂商」。`POST /api/sandbox/video` 不走项目预算。一集图是固定的 `ep1`。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。
 

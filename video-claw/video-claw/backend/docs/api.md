@@ -19,7 +19,7 @@
 | 库路由 | 400 | 其他 `StorageError`（种类非法、缺字段、引用不匹配等） |
 | 执行器路由 `executor.py` | 404 | 项目、图节点、形象不存在。删除一个已经不存在的项目也是 404 |
 | 执行器路由 | 400 | `GraphError` 或 `StorageError`（含门禁 `_GateError`）。`confirm` 的查询参数或 JSON 里只要出现 `force_new`（包括 `false`）也是 400，`detail` 为 `force_new is only valid on retry_video_submit` |
-| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（都已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新` |
+| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（`submit_dispatched` 或非空 `vendor_task_id` 即拒绝，表示可能已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新` |
 | 执行器路由 | 422 | `confirm` 或 `retry_video_submit` 的 JSON 把 `force_new` 设成 `null`。字段类型是 `bool`，Pydantic 拒绝 `null`，请求进不了处理函数 |
 | 上传 | 400 | 扩展名不在允许列表 |
 | 上传 | 500 | 落盘失败 |
@@ -264,7 +264,7 @@
 
 ### `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`
 
-请求体可省略，省略等于 `force_new` false：续接已有 `vendor_task_id` 或 `result_obtained`，花原来的报价，不新开 POST。`RetryVideoSubmitRequest.force_new` 默认 false。只有 JSON `true`，或 Pydantic 当成 true 的字符串 `"true"`，才会 `force_new=True`：先释放旧报价，重新 `authorize`，成功之后才丢掉任务 id，然后才新开 POST。`"false"` 被收成 false，仍是续接。`null` 在校验阶段就是 422，到不了这个默认值。视频节点没有可用适配器时，和 confirm 一样先 409，不入账。
+请求体可省略，省略等于 `force_new` false：续接已有 `vendor_task_id` 或 `result_obtained`，花原来的报价，不新开 POST。`RetryVideoSubmitRequest.force_new` 默认 false，并按 Pydantic 的 `bool` 解析，不是只有 `true` 和 `"true"`。当前环境实测：JSON `true`、`1`，以及 `"true"` / `"True"` / `"yes"` / `"on"` / `"1"` / `"y"` / `"t"`（大小写不限）才是新开：先释放旧报价，重新 `authorize`，成功之后才丢掉任务 id，然后才新开 POST。JSON `false`、`0`，以及 `"false"` / `"no"` / `"off"` / `"0"` / `"n"` / `"f"` 仍是续接。`null` 在校验阶段就是 422（`bool_type`），到不了这个默认值。带首尾空格的字符串同样 422。前端送的是布尔值。视频节点没有可用适配器时，和 confirm 一样先 409，不入账。
 
 节点运行请求体 `NodeRunRequest`（可省略，省略等于 `{}`）：
 
@@ -367,6 +367,7 @@
   "budget": {"used": 0, "committed": 0, "remaining": null, "cap": null, "currency": null, "mixed_currency": false},
   "ledger": [],
   "nodes": [],
+  "edges": [],
   "awaiting_user": [],
   "executable": [],
   "stale": []

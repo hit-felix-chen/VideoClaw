@@ -26,7 +26,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 并发的第二个 confirm 会 400，不会再授权、也不会再提交。
 
-该模型的供应商没有密钥，也没有注入适配器时，不打供应商，仍会把准备好的请求存进节点并花掉已保留的报价。执行器只把 `ark`、`dashscope`、`kling` 的 `api_key` 当成已配置。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。
+HTTP 的 `confirm`、`retry_video_submit` 和视频节点的 `raise` 在没有注入适配器且供应商密钥为空时，授权前就是 409：不入账，也不写 `submit_dispatched`。见上文。只有进程内的 `GraphExecutor.confirm` 会在这条路径上按 `quote.max` 入账；`impact/confirm` 和 `impact/regenerate` 直接调用这个方法，所以它们也不走 409，仍会入账且 `provider_called` 为 false。执行器只把 `ark`、`dashscope`、`kling` 的 `api_key` 当成已配置。Seedance 2.5 走方舟，读 `api_providers.ark.api_key`。
 
 ## 标记
 
@@ -44,7 +44,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
   -d '{"force_new": false}'
 ```
 
-省略请求体同样是续接。`"false"` 也是续接。只有 JSON `true` 或字符串 `"true"` 才新开：先释放旧报价，重新授权成功后才丢掉 `vendor_task_id`，然后 POST。`"null"` 不行，`null` 是 422。无密钥时这条也是 409，不入账。
+省略请求体是续接。`force_new` 按 Pydantic 的 `bool` 解析，不是只有 `true` 和 `"true"`。当前环境实测：JSON `true`、`1`，以及 `"true"` / `"True"` / `"yes"` / `"on"` / `"1"` / `"y"` / `"t"`（大小写不限）才新开并重新授权；JSON `false`、`0`，以及 `"false"` / `"no"` / `"off"` / `"0"` / `"n"` / `"f"` 仍是续接。`null` 是 422。带首尾空格的字符串也解析失败。前端送的是布尔值。新开时先释放旧报价，重新授权成功后才丢掉 `vendor_task_id`，然后 POST。无密钥时这条 HTTP 也是 409，不入账。
 
 默认续接：标记保持，有 `vendor_task_id` 就再轮询并花原来的报价（过期的 running 认领也一样），有 `result_obtained` 就直接结算、不再 POST。新报价放不进预算时，id 和标记都留着，用 raise 继续。
 
