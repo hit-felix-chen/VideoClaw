@@ -35,6 +35,16 @@ npm start
 curl http://localhost:8000/api/health
 ```
 
+### Tests
+One command runs the whole backend suite. It does not call a real model or ffmpeg. From this skill directory:
+
+```bash
+cd video-claw/backend
+python3 -m pytest
+```
+
+From the repository root the same command is `cd video-claw/video-claw/backend && python3 -m pytest`. Dev dependencies are the `dev` extra in `video-claw/backend/pyproject.toml` (`pytest`, `pytest-asyncio`). Pushing the repository runs that command and `npx tsc --noEmit` in `video-claw/frontend` via `.github/workflows/tests.yml`.
+
 ## Architecture
 
 ### Backend Core

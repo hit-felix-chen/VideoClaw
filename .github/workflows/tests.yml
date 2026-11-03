@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        working-directory: video-claw/video-claw/backend
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+          python3 -m pip install "pytest>=8.0.0" "pytest-asyncio>=0.23.0"
+
+      - name: Run backend tests
+        working-directory: video-claw/video-claw/backend
+        run: python3 -m pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: video-claw/video-claw/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: video-claw/video-claw/frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: video-claw/video-claw/frontend
+        run: npx tsc --noEmit

@@ -404,6 +404,19 @@ The first time you use `video-claw`, if the project has not been built manually,
 
 ---
 
+# 🧪 Tests
+
+Backend tests live in `video-claw/video-claw/backend`. One command runs the full backend suite (no real model calls and no ffmpeg):
+
+```bash
+cd video-claw/video-claw/backend
+python3 -m pip install -r requirements.txt
+python3 -m pip install "pytest>=8.0.0" "pytest-asyncio>=0.23.0"
+python3 -m pytest
+```
+
+Pytest settings are in `video-claw/video-claw/backend/pyproject.toml`. On push, GitHub Actions (`.github/workflows/tests.yml`) runs that pytest command and `npx tsc --noEmit` in `video-claw/video-claw/frontend`.
+
 # 🔧 Configuration
 
 <details>

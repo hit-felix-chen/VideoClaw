@@ -416,6 +416,21 @@ clawhub install video-claw
 
 ---
 
+# 🧪 测试
+
+后端测试在 `video-claw/video-claw/backend`。一条命令跑完全部后端测试（不调用真实模型，也不调用 ffmpeg）：
+
+```bash
+cd video-claw/video-claw/backend
+python3 -m pip install -r requirements.txt
+python3 -m pip install "pytest>=8.0.0" "pytest-asyncio>=0.23.0"
+python3 -m pytest
+```
+
+`pytest` 配置在 `video-claw/video-claw/backend/pyproject.toml`。推送到本仓库时，GitHub Actions（`.github/workflows/tests.yml`）会运行上述 pytest，并在 `video-claw/video-claw/frontend` 执行 `npx tsc --noEmit`。
+
+---
+
 # 🔧 配置说明
 
 <details>
