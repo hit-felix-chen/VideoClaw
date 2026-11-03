@@ -1,6 +1,16 @@
 /** Pure view rules for one v2 episode. No network. */
 
 export const FORCE_NEW_COPY = '新建会产生新的一笔厂商生成（可能再次扣费）';
+export const OFFLINE_BADGE = '已记账·未调用厂商';
+
+const RESERVATION_KINDS = new Set([
+  'character',
+  'scene',
+  'setting',
+  'keyframe',
+  'image',
+  'tts',
+]);
 
 export const VIDEO_KINDS = new Set([
   'shot_segment',
@@ -42,6 +52,7 @@ export interface NodeView {
   quote?: QuoteView | null;
   budget_hold?: boolean;
   entry_id?: string | null;
+  provider_called?: boolean;
 }
 
 export function statusLabel(status: string | null | undefined): string {
@@ -109,6 +120,34 @@ export function retryRequest(forceNew: boolean, secondConfirmed: boolean): { for
     throw new Error('新建需要第二次确认');
   }
   return { force_new: Boolean(forceNew && secondConfirmed) };
+}
+
+export function offlineUncalled(node: NodeView): boolean {
+  if (node.status !== 'done') return false;
+  if (node.provider_called === false) return true;
+  const result = node.metadata?.result;
+  if (!result || typeof result !== 'object') return false;
+  return (result as { provider_called?: unknown }).provider_called === false;
+}
+
+export function showsReservation(node: { kind?: string }): boolean {
+  return RESERVATION_KINDS.has(node.kind || '');
+}
+
+export function reservationCopy(
+  node: NodeView,
+  ledger: Array<Record<string, unknown>> | undefined,
+): string {
+  if (!showsReservation(node)) return '';
+  const rows = (ledger || []).filter(row => row.node_id === node.id);
+  const row = [...rows].reverse().find(item => item.status === 'spent' || item.status === 'quoted');
+  if (!row || typeof row.quote_amount !== 'number') return '';
+  const currency = typeof row.currency === 'string' && row.currency ? ` ${row.currency}` : '';
+  const ceiling = `预留上限 ${row.quote_amount}${currency}`;
+  if (row.status === 'spent' || typeof row.actual_amount === 'number') {
+    return `${ceiling}。按上限入账。`;
+  }
+  return ceiling;
 }
 
 export function canConfirmVideo(node: NodeView): boolean {

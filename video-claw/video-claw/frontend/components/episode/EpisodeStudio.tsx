@@ -380,6 +380,7 @@ export default function EpisodeStudio() {
                       remember(node.id, result);
                       await reload(projectId);
                     })}
+                    ledger={status.ledger}
                     onRetry={forceNew => run(async () => {
                       if (!projectId) return;
                       const result = await retryVideoSubmit(projectId, node.id, forceNew, forceNew);

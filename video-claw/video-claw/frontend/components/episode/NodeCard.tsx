@@ -4,11 +4,14 @@ import { useState } from 'react';
 import RetryPanel from '@/components/episode/RetryPanel';
 import type { GraphNode, NodeActionResult } from '@/lib/episodeApi';
 import {
+  OFFLINE_BADGE,
   canConfirmVideo,
   formatQuote,
   isVideoNode,
   needsVideoRetry,
   nodeLabel,
+  offlineUncalled,
+  reservationCopy,
   statusLabel,
 } from '@/lib/episodeFlow';
 
@@ -35,6 +38,7 @@ export default function NodeCard({
   onDeclineBudget,
   onRetry,
   action,
+  ledger,
 }: {
   node: GraphNode;
   executable: boolean;
@@ -49,6 +53,7 @@ export default function NodeCard({
   onDeclineBudget: () => void;
   onRetry: (forceNew: boolean) => void;
   action: NodeActionResult | null;
+  ledger?: Array<Record<string, unknown>>;
 }) {
   const [cap, setCap] = useState('');
   const quote = node.quote || (action?.node_id === node.id ? action.quote : null);
@@ -60,13 +65,19 @@ export default function NodeCard({
   const stateNote = node.node_state && node.node_state !== node.status
     ? `账本状态 ${statusLabel(node.node_state)}`
     : '';
+  const offline = offlineUncalled(node);
+  const reservation = reservationCopy(node, ledger);
 
   return (
     <article className="space-y-3 rounded-xl border border-gray-200 bg-white p-4">
       <header className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-gray-900">{nodeLabel(node)}</h3>
         <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500">{node.kind}</span>
-        <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700">{statusLabel(node.status)}</span>
+        {offline ? (
+          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[11px] text-gray-800">{OFFLINE_BADGE}</span>
+        ) : (
+          <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700">{statusLabel(node.status)}</span>
+        )}
         {stateNote && <span className="text-[11px] text-gray-500">{stateNote}</span>}
       </header>
 
@@ -94,9 +105,7 @@ export default function NodeCard({
       {output && (
         <p className="whitespace-pre-wrap rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-700">{output}</p>
       )}
-      {isVideoNode(node) && action?.status === 'done' && action.provider_called === false && (
-        <p className="text-sm text-gray-700">节点已结束，但没有调用厂商。</p>
-      )}
+      {reservation && <p className="text-sm text-gray-700">{reservation}</p>}
       {isVideoNode(node) && action?.status === 'done' && action.provider_called === true && (
         <p className="text-sm text-gray-700">厂商已返回结果。</p>
       )}

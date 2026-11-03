@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   FORCE_NEW_COPY,
+  OFFLINE_BADGE,
   canConfirmVideo,
   confirmRequest,
   formatQuote,
   needsVideoRetry,
+  offlineUncalled,
+  reservationCopy,
   retryRequest,
   runPayload,
   statusLabel,
@@ -62,5 +65,23 @@ describe('episode view', () => {
     expect(() => retryRequest(true, false)).toThrow(/第二次确认/);
     expect(retryRequest(true, true)).toEqual({ force_new: true });
     expect(FORCE_NEW_COPY).toBe('新建会产生新的一笔厂商生成（可能再次扣费）');
+  });
+
+  it('keeps the offline badge on a reloaded image node', () => {
+    const node = {
+      id: 'character',
+      kind: 'character',
+      status: 'done',
+      provider_called: false,
+      metadata: { result: { provider_called: false, kind: 'character' } },
+    };
+    expect(offlineUncalled(node)).toBe(true);
+    expect(OFFLINE_BADGE).toBe('已记账·未调用厂商');
+    expect(statusLabel('done')).not.toBe(OFFLINE_BADGE);
+    expect(reservationCopy(node, [
+      { node_id: 'character', status: 'spent', quote_amount: 6, actual_amount: 6, currency: 'CNY' },
+    ])).toBe('预留上限 6 CNY。按上限入账。');
+    const reloaded = JSON.parse(JSON.stringify(node));
+    expect(offlineUncalled(reloaded)).toBe(true);
   });
 });
