@@ -6,7 +6,6 @@ from .workflow import router as workflow_router
 from .sessions import router as sessions_router
 from .stages import router as stages_router
 from .sandbox import router as sandbox_router
-from .pipelines import router as pipelines_router
 from .models import router as models_router
 from .configuration import router as configuration_router
 
@@ -17,7 +16,6 @@ __all__ = [
     "sessions_router",
     "stages_router",
     "sandbox_router",
-    "pipelines_router",
     "models_router",
     "configuration_router",
 ]

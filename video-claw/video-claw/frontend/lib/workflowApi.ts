@@ -39,21 +39,6 @@ export interface StreamEvent {
   data?: any;
 }
 
-export interface PipelineTask {
-  task_id: string;
-  pipeline: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | string;
-  progress?: number;
-  message?: string;
-  input?: Record<string, any>;
-  output?: Record<string, any>;
-  artifacts?: Array<{ kind: string; name?: string; path: string; exists?: boolean; created_at?: string }>;
-  error?: string | null;
-  created_at?: string;
-  updated_at?: string;
-  output_dir?: string;
-}
-
 export interface SandboxTask {
   id: string;
   tool: string;
@@ -62,22 +47,6 @@ export interface SandboxTask {
   status: string;
   progress?: number;
   created_at?: string;
-}
-
-export interface PipelineStartResponse {
-  task_id: string;
-  pipeline: string;
-  status: string;
-  metadata_url: string;
-  output_dir: string;
-}
-
-export interface PipelineTaskEvent {
-  type: 'snapshot' | 'progress' | 'artifact' | 'completed' | 'failed';
-  task_id: string;
-  status?: string;
-  progress?: number;
-  artifact?: { kind: string; name?: string; path: string; exists?: boolean; created_at?: string };
 }
 
 export interface ApiModelOption {
@@ -97,23 +66,6 @@ export interface ApiModelOption {
   capabilities?: Record<string, any>;
 }
 
-export interface StandardTemplateOption {
-  id: string;
-  name: string;
-  label: string;
-  size: string;
-  ratio: '9:16' | '1:1' | '16:9' | string;
-  width: number;
-  height: number;
-  media_width: number;
-  media_height: number;
-  media_ratio: string;
-  media_resolution: string;
-  supports_video?: boolean;
-  fields: Array<{ key: string; type: string; default: string }>;
-  preview_url: string;
-}
-
 export async function fetchStages(): Promise<StageInfo[]> {
   const resp = await fetch('/api/stages');
   const data = await resp.json();
@@ -124,44 +76,6 @@ export async function fetchSessions(): Promise<any[]> {
   const resp = await fetch('/api/sessions');
   const data = await resp.json();
   return data.sessions || [];
-}
-
-async function postPipelineTask(path: string, params: Record<string, any>): Promise<PipelineStartResponse> {
-  const resp = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: '启动任务失败' }));
-    throw new Error(err.detail || '启动任务失败');
-  }
-  return resp.json();
-}
-
-export async function startStandardPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
-  return postPipelineTask('/api/pipelines/standard/tasks', params);
-}
-
-export async function startActionTransferPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
-  return postPipelineTask('/api/pipelines/action_transfer/tasks', params);
-}
-
-export async function startDigitalHumanPipeline(params: Record<string, any>): Promise<PipelineStartResponse> {
-  return postPipelineTask('/api/pipelines/digital_human/tasks', params);
-}
-
-export async function fetchPipelineTasks(limit = 100): Promise<PipelineTask[]> {
-  const resp = await fetch(`/api/tasks?limit=${limit}`);
-  if (!resp.ok) throw new Error('获取任务历史失败');
-  const data = await resp.json();
-  return data.tasks || [];
-}
-
-export async function fetchPipelineTask(taskId: string): Promise<PipelineTask> {
-  const resp = await fetch(`/api/tasks/${taskId}`);
-  if (!resp.ok) throw new Error('获取任务状态失败');
-  return resp.json();
 }
 
 export async function fetchSandboxTasks(): Promise<SandboxTask[]> {
@@ -180,11 +94,6 @@ export async function clearTempCache(): Promise<{ status: string; deleted: numbe
   return resp.json();
 }
 
-export async function deletePipelineTask(taskId: string): Promise<void> {
-  const resp = await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
-  if (!resp.ok) throw new Error('删除任务失败');
-}
-
 export async function fetchApiModels(params: {
   mediaType?: 'image' | 'video';
   modelType?: 'llm' | 'vlm' | 't2i' | 'i2i' | 'video';
@@ -200,13 +109,6 @@ export async function fetchApiModels(params: {
   if (!resp.ok) throw new Error('获取模型列表失败');
   const data = await resp.json();
   return data.models || [];
-}
-
-export async function fetchStandardTemplates(): Promise<StandardTemplateOption[]> {
-  const resp = await fetch('/api/pipelines/standard/templates');
-  if (!resp.ok) throw new Error('获取模版列表失败');
-  const data = await resp.json();
-  return data.templates || [];
 }
 
 export async function uploadMedia(file: File): Promise<{ filename: string; file_path: string }> {
@@ -243,26 +145,6 @@ export async function uploadArtifactImage(
     throw new Error(err.detail || '上传图片失败');
   }
   return resp.json();
-}
-
-export function subscribePipelineTask(
-  taskId: string,
-  onEvent: (event: PipelineTaskEvent) => void,
-  onError?: () => void,
-): () => void {
-  const source = new EventSource(`${STREAM_API_BASE}/api/tasks/${taskId}/events`);
-  source.onmessage = event => {
-    try {
-      onEvent(JSON.parse(event.data));
-    } catch {
-      // Ignore malformed stream events.
-    }
-  };
-  source.onerror = () => {
-    onError?.();
-    source.close();
-  };
-  return () => source.close();
 }
 
 export async function startProject(params: {

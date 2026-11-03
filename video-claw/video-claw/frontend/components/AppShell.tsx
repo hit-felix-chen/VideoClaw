@@ -2,26 +2,17 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clapperboard, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Repeat2, Settings, Trash2, UserRound } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Hexagon, Home, Loader2, PanelLeftOpen, Settings, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import { useEffect, useState, type CSSProperties } from 'react';
-import { clearTempCache, fetchPipelineTasks, fetchSandboxTasks, fetchSessions, type PipelineTask, type SandboxTask } from '@/lib/workflowApi';
+import { clearTempCache, fetchSandboxTasks, fetchSessions, type SandboxTask } from '@/lib/workflowApi';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Video-Claw', icon: Home },
   { href: '/sandbox', label: '临时工作台', icon: Hexagon },
-  { href: '/pipelines/standard', label: '文艺短视频', icon: Clapperboard },
-  { href: '/pipelines/action-transfer', label: '动作迁移', icon: Repeat2 },
-  { href: '/pipelines/digital-human', label: '数字人口播', icon: UserRound },
 ];
 
 const SETTINGS_ITEM = { href: '/settings', label: '设置', icon: Settings };
-
-const PIPELINE_ROUTES: Record<string, { href: string; label: string }> = {
-  standard: { href: '/pipelines/standard', label: '文艺短视频' },
-  action_transfer: { href: '/pipelines/action-transfer', label: '动作迁移' },
-  digital_human: { href: '/pipelines/digital-human', label: '数字人口播' },
-};
 
 const TASK_STATUS_STYLE: Record<string, string> = {
   pending: 'bg-gray-100 text-gray-500',
@@ -38,12 +29,6 @@ function statusText(status?: string) {
   if (status === 'completed') return '已完成';
   if (status === 'failed') return '失败';
   return status || '未知';
-}
-
-function taskTitle(task: PipelineTask) {
-  const input = task.input || {};
-  const output = task.output || {};
-  return output.title || input.title || input.goods_title || input.text || input.prompt_text || input.goods_text || task.task_id;
 }
 
 type RunningTaskItem = {
@@ -89,32 +74,6 @@ function projectReviewTaskFromSession(session: any): RunningTaskItem | null {
     scope: waitingStage ? `主流程 · ${waitingStage}` : '主流程',
     status: waitingStage ? 'waiting' : 'completed',
     progress: waitingStage ? Math.round((completed / WORKFLOW_STAGE_COUNT) * 100) : 100,
-  };
-}
-
-function pipelineTaskItem(task: PipelineTask): RunningTaskItem | null {
-  const route = PIPELINE_ROUTES[task.pipeline];
-  if (!route || !['pending', 'running'].includes(task.status)) return null;
-  return {
-    id: `pipeline-${task.task_id}`,
-    href: `${route.href}?task=${encodeURIComponent(task.task_id)}`,
-    title: String(taskTitle(task)),
-    scope: route.label,
-    status: task.status,
-    progress: task.progress || 0,
-  };
-}
-
-function pipelineCompletedTaskItem(task: PipelineTask): RunningTaskItem | null {
-  const route = PIPELINE_ROUTES[task.pipeline];
-  if (!route || task.status !== 'completed') return null;
-  return {
-    id: `pipeline-completed-${task.task_id}`,
-    href: `${route.href}?task=${encodeURIComponent(task.task_id)}`,
-    title: String(taskTitle(task)),
-    scope: route.label,
-    status: 'completed',
-    progress: 100,
   };
 }
 
@@ -241,20 +200,20 @@ function SidebarTaskPanels({ currentPath }: { currentPath: string }) {
   const load = async () => {
     setLoading(true);
     try {
-      const [pipelineRecords, sessions, sandboxRecords] = await Promise.all([
-        fetchPipelineTasks(100).catch(() => []),
+      const [sessions, sandboxRecords] = await Promise.all([
         fetchSessions().catch(() => []),
         fetchSandboxTasks().catch(() => []),
       ]);
       setRunningTasks([
         ...sandboxRecords.map(sandboxTaskItem),
-        ...pipelineRecords.map(pipelineTaskItem).filter((task): task is RunningTaskItem => Boolean(task)),
         ...sessions.map(projectTaskFromSession).filter((task): task is RunningTaskItem => Boolean(task)),
       ]);
-      setCompletedTasks([
-        ...pipelineRecords.map(pipelineCompletedTaskItem).filter((task): task is RunningTaskItem => Boolean(task)),
-        ...sessions.map(projectReviewTaskFromSession).filter((task): task is RunningTaskItem => Boolean(task)),
-      ].filter(task => !dismissedCompleted.has(task.id)));
+      setCompletedTasks(
+        sessions
+          .map(projectReviewTaskFromSession)
+          .filter((task): task is RunningTaskItem => Boolean(task))
+          .filter(task => !dismissedCompleted.has(task.id)),
+      );
     } finally {
       setLoading(false);
     }
