@@ -77,6 +77,15 @@ it claims the same way. ``node_state`` ``ready`` left by a
 kill after the cap is raised is claimable, and that confirm spends the
 quote already reserved instead of saying the node is not awaiting.
 
+``stop`` after ``submit_dispatched`` calls ``adapter.cancel`` for a video
+node. The quote is released and the node becomes ``skipped`` only when that
+call returns ``cancelled``. A ``completed`` result, or a ``result_obtained``
+URL already stored on the node, is settled with ``record_actual`` and
+``done``; the quote is not released. Rejection, an unsupported vendor, a
+timeout, or any uncertain status leaves the node and the quote unchanged.
+The vendor call happens before the write transaction, and the write
+re-reads the node so a submit that finished in that window is not released.
+
 Confirming a look impact is the path that does rerun the confirmed
 downstream set. Each of those nodes goes through ``run_node``. A video node
 then ``confirm``s, which authorizes the quote and writes the ledger. Image,
@@ -103,7 +112,9 @@ import logging
 from typing import Any, Callable, NoReturn, Optional
 
 from graph.dependency_graph import DependencyGraph
+from graph.errors import InvalidTransitionError, NotReadyError
 from graph.model import NodeStatus
+from models.middle.adapter import CANCEL_CANCELLED, CANCEL_COMPLETED, CANCEL_OUTCOMES
 from models.middle.budget import ProjectBudget, pause_message
 from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
 from models.middle.pricing import QuoteRequest, quote
@@ -397,6 +408,36 @@ def _vendor_hold(node) -> bool:
     return _dispatched(node) or _vendor_task_id(node) is not None
 
 
+def _is_video_node(node) -> bool:
+    if node.kind in _VIDEO:
+        return True
+    meta = _metadata(node)
+    if meta.get("modality") == "video":
+        return True
+    pending = meta.get("pending_call")
+    return isinstance(pending, dict) and pending.get("modality") == "video"
+
+
+def _video_model_id(node) -> str:
+    meta = _metadata(node)
+    pending = meta.get("pending_call")
+    if isinstance(pending, dict):
+        model_id = pending.get("model_id")
+        if isinstance(model_id, str) and model_id.strip():
+            return model_id.strip()
+    model_id = meta.get("model_id")
+    if isinstance(model_id, str) and model_id.strip():
+        return model_id.strip()
+    return ""
+
+
+def _stored_result_url(node) -> Optional[str]:
+    value = _metadata(node).get("result_obtained")
+    if isinstance(value, str) and _looks_like_url_or_path(value.strip()):
+        return value.strip()
+    return None
+
+
 def _force_new_pending(node) -> bool:
     return bool(_metadata(node).get("force_new_pending"))
 
@@ -437,6 +478,28 @@ def _keep_dispatched_marker(exc: BaseException) -> bool:
     again while it is set.
     """
     return not _request_was_not_sent(exc)
+
+
+def _stop_message(
+    stopped: list[str],
+    vendor_cancelled: list[str],
+    settled: list[dict],
+    refused: list[dict],
+) -> str:
+    if not stopped and not refused and not settled:
+        return "当前没有正在运行的节点"
+    if refused and not stopped and not settled:
+        return "没有节点被停止"
+    parts: list[str] = []
+    if vendor_cancelled and len(vendor_cancelled) == len(stopped):
+        parts.append("已取消排队中的厂商任务，报价已释放，节点已跳过。")
+    elif vendor_cancelled:
+        parts.append("已停止尚未发给厂商的节点，并取消了排队中的厂商任务。报价已释放。")
+    elif stopped:
+        parts.append("已停止仍在本地运行、且尚未发给厂商的节点")
+    if settled:
+        parts.append("有厂商任务已完成，已按完成入账，没有释放报价。")
+    return "".join(parts)
 
 
 def _blocked_message(node) -> str:
@@ -518,6 +581,14 @@ class _ClaimLost(Exception):
 
 class _StopMissed(Exception):
     """Stop did not persist. Roll the surrounding transaction back."""
+
+
+class _StopUncertain(Exception):
+    """The vendor outcome is not a clear cancel or a clear completion."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
 
 
 class GraphExecutor:
@@ -1809,10 +1880,13 @@ class GraphExecutor:
         }
 
     def stop(self, project_id: str) -> dict:
-        """Stop nodes that are running locally and have not reached a vendor.
+        """Stop a local run, or cancel a queued video task that was already submitted.
 
-        A node that already has ``submit_dispatched`` or ``vendor_task_id``
-        stays as it is. This does not report those nodes as stopped.
+        A video node with ``submit_dispatched`` or ``vendor_task_id`` calls
+        ``adapter.cancel``. The reserved quote is released and the node
+        becomes ``skipped`` only when the outcome is ``cancelled``. Completion
+        spends the quote and marks the node ``done``. Any other outcome leaves
+        both the node and the quote as they are.
         """
         graph = self._load(project_id)
         running_ids = [
@@ -1821,17 +1895,30 @@ class GraphExecutor:
             if graph.node(node_id).status == NodeStatus.RUNNING
         ]
         stopped: list[str] = []
+        vendor_cancelled: list[str] = []
+        settled: list[dict] = []
         refused: list[dict] = []
         for node_id in running_ids:
             graph = self._load(project_id)
             if node_id not in graph or graph.node(node_id).status != NodeStatus.RUNNING:
                 continue
-            if _vendor_hold(graph.node(node_id)):
-                refused.append(
-                    {
-                        "node_id": node_id,
-                        "reason": "生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。",
-                    }
+            node = graph.node(node_id)
+            if _vendor_hold(node):
+                if not _is_video_node(node):
+                    refused.append(
+                        {
+                            "node_id": node_id,
+                            "reason": "生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。",
+                        }
+                    )
+                    continue
+                self._stop_dispatched_video(
+                    project_id,
+                    node_id,
+                    stopped,
+                    vendor_cancelled,
+                    settled,
+                    refused,
                 )
                 continue
             try:
@@ -1849,18 +1936,245 @@ class GraphExecutor:
                 refused.append({"node_id": node_id, "reason": "停止没有写入，节点仍在运行。"})
                 continue
             stopped.append(node_id)
-        if not stopped and not refused:
-            message = "当前没有正在运行的节点"
-        elif refused and not stopped:
-            message = "没有节点被停止"
-        else:
-            message = "已停止仍在本地运行、且尚未发给厂商的节点"
         return {
             "project_id": project_id,
             "stopped": stopped,
             "refused": refused,
-            "message": message,
+            "settled": settled,
+            "message": _stop_message(stopped, vendor_cancelled, settled, refused),
         }
+
+    def _stop_dispatched_video(
+        self,
+        project_id: str,
+        node_id: str,
+        stopped: list[str],
+        vendor_cancelled: list[str],
+        settled: list[dict],
+        refused: list[dict],
+    ) -> None:
+        """Cancel one dispatched video node, or settle it when it already finished."""
+        node = self._load(project_id).node(node_id)
+        if _stored_result_url(node):
+            self._finish_vendor_decision(
+                project_id,
+                node_id,
+                "complete",
+                _stored_result_url(node),
+                "节点已有结果地址，按完成入账，没有调用取消，也没有释放报价。",
+                stopped,
+                vendor_cancelled,
+                settled,
+                refused,
+            )
+            return
+        task_id = _vendor_task_id(node)
+        if task_id is None:
+            refused.append(
+                {
+                    "node_id": node_id,
+                    "reason": "已向厂商提交，但还没有任务号，无法确认能否取消，报价保持保留，节点状态不变。",
+                }
+            )
+            return
+        adapter, _spec = self._video_submitter(_video_model_id(node))
+        if adapter is None:
+            if not _video_model_id(node):
+                reason = "节点没有模型 id，无法选择取消接口，报价保持保留，节点状态不变。"
+            else:
+                reason = "未配置视频厂商密钥，无法向厂商确认取消结果，报价保持保留，节点状态不变。"
+            refused.append({"node_id": node_id, "reason": reason})
+            return
+        cancel = getattr(adapter, "cancel", None)
+        if not callable(cancel):
+            refused.append(
+                {
+                    "node_id": node_id,
+                    "reason": "该视频厂商没有已核实的取消接口，报价保持保留，节点状态不变。",
+                }
+            )
+            return
+        try:
+            result = cancel(task_id)
+        except Exception:
+            refused.append(
+                {
+                    "node_id": node_id,
+                    "reason": "取消请求失败，没有可核对的官方成功结果，报价保持保留，节点状态不变。",
+                }
+            )
+            return
+        if not isinstance(result, dict) or result.get("outcome") not in CANCEL_OUTCOMES:
+            refused.append(
+                {
+                    "node_id": node_id,
+                    "reason": "取消结果无法识别，报价保持保留，节点状态不变。",
+                }
+            )
+            return
+        outcome = result.get("outcome")
+        message = result.get("message")
+        if not isinstance(message, str) or not message.strip():
+            message = "取消结果不确定，报价保持保留，节点状态不变。"
+        else:
+            message = message.strip()
+        raw_url = result.get("video_url")
+        video_url = None
+        if isinstance(raw_url, str) and _looks_like_url_or_path(raw_url.strip()):
+            video_url = raw_url.strip()
+        if outcome == CANCEL_CANCELLED:
+            self._finish_vendor_decision(
+                project_id,
+                node_id,
+                "cancel",
+                None,
+                message,
+                stopped,
+                vendor_cancelled,
+                settled,
+                refused,
+            )
+            return
+        if outcome == CANCEL_COMPLETED:
+            self._finish_vendor_decision(
+                project_id,
+                node_id,
+                "complete",
+                video_url,
+                message,
+                stopped,
+                vendor_cancelled,
+                settled,
+                refused,
+            )
+            return
+        refused.append({"node_id": node_id, "reason": message})
+
+    def _finish_vendor_decision(
+        self,
+        project_id: str,
+        node_id: str,
+        decision: str,
+        video_url: Optional[str],
+        reason: str,
+        stopped: list[str],
+        vendor_cancelled: list[str],
+        settled: list[dict],
+        refused: list[dict],
+    ) -> None:
+        try:
+            kind = self._apply_vendor_decision(project_id, node_id, decision, video_url)
+        except _StopUncertain as exc:
+            refused.append({"node_id": node_id, "reason": exc.reason})
+            return
+        except _StopMissed:
+            refused.append({"node_id": node_id, "reason": "停止没有写入，节点仍在运行。"})
+            return
+        if kind == "cancelled":
+            stopped.append(node_id)
+            vendor_cancelled.append(node_id)
+            return
+        settled.append({"node_id": node_id, "reason": reason})
+
+    def _apply_vendor_decision(
+        self,
+        project_id: str,
+        node_id: str,
+        decision: str,
+        video_url: Optional[str],
+    ) -> str:
+        try:
+            with transaction(self.conn):
+                return self._write_vendor_decision(project_id, node_id, decision, video_url)
+        except NotReadyError as exc:
+            raise _StopUncertain(
+                "任务已完成，但节点因前驱未完成不能标为 done，报价保持保留，节点状态不变。"
+            ) from exc
+        except InvalidTransitionError as exc:
+            raise _StopUncertain("节点状态不能改成跳过或完成，报价保持保留，节点状态不变。") from exc
+        except _GateError as exc:
+            raise _StopUncertain("节点状态不能改成跳过或完成，报价保持保留，节点状态不变。") from exc
+
+    def _write_vendor_decision(
+        self,
+        project_id: str,
+        node_id: str,
+        decision: str,
+        video_url: Optional[str],
+    ) -> str:
+        graph = self._load(project_id)
+        if node_id not in graph:
+            raise _StopMissed()
+        node = graph.node(node_id)
+        if node.status == NodeStatus.SKIPPED and _metadata(node).get("stop_reason") == "用户取消":
+            return "cancelled"
+        if node.status == NodeStatus.DONE:
+            return "settled"
+        if node.status != NodeStatus.RUNNING:
+            raise _StopMissed()
+        stored_url = _stored_result_url(node)
+        if decision == "cancel" and not stored_url:
+            self._mark_video_skipped(graph, node_id)
+            self._save(project_id, graph, owned={node_id}, resume_pause=True)
+            stored = self._load(project_id).node(node_id)
+            if stored.status == NodeStatus.DONE:
+                return "settled"
+            if stored.status == NodeStatus.SKIPPED and _metadata(stored).get("stop_reason") == "用户取消":
+                self._release_quoted_reservation(project_id, node_id)
+                return "cancelled"
+            raise _StopMissed()
+        url = stored_url or video_url
+        if not self._open_quoted(project_id, node_id):
+            raise _StopUncertain("任务已完成，但没有可入账的报价，节点状态不变，也没有释放报价。")
+        self._mark_video_done(graph, node_id, url)
+        self._save(project_id, graph, owned={node_id}, resume_pause=True)
+        stored = self._load(project_id).node(node_id)
+        if stored.status == NodeStatus.SKIPPED and _metadata(stored).get("stop_reason") == "用户取消":
+            return "cancelled"
+        if stored.status != NodeStatus.DONE:
+            raise _StopMissed()
+        quoted = self._open_quoted(project_id, node_id)
+        if quoted is not None:
+            amount = quoted.get("quote_amount")
+            if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+                raise _StopUncertain("任务已完成，但报价金额无法入账，节点状态不变，也没有释放报价。")
+            ProjectBudget.record_actual(self.conn, project_id, quoted["id"], float(amount))
+        return "settled"
+
+    def _mark_video_skipped(self, graph: DependencyGraph, node_id: str) -> None:
+        if graph.node(node_id).status == NodeStatus.RUNNING:
+            graph.transition(node_id, NodeStatus.PENDING)
+        self._skip(graph, node_id)
+        graph.update_metadata(
+            node_id,
+            stop_reason="用户取消",
+            submit_dispatched=None,
+            vendor_task_id=None,
+            submit_error=None,
+            pending_call=None,
+        )
+
+    def _mark_video_done(self, graph: DependencyGraph, node_id: str, url: Optional[str]) -> None:
+        self._to_done(graph, node_id)
+        if isinstance(url, str) and _looks_like_url_or_path(url):
+            graph.update_metadata(
+                node_id,
+                result_obtained=url,
+                result={"result_id": url},
+                provider_called=True,
+                pending_call=None,
+                submit_error=None,
+                submit_dispatched=None,
+                vendor_task_id=None,
+            )
+            return
+        graph.update_metadata(
+            node_id,
+            pending_call=None,
+            submit_error=None,
+            submit_dispatched=None,
+            vendor_task_id=None,
+        )
 
     def _status_node(self, project_id: str, graph: DependencyGraph, node_id: str) -> dict:
         public = graph.node(node_id).to_dict()

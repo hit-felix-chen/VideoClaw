@@ -153,7 +153,8 @@ def stop_project(
 ):
     with _errors():
         body = _executor(conn).stop(project_id)
-    if body["refused"] and not body["stopped"]:
+    settled = body.get("settled") or []
+    if body["refused"] and not body["stopped"] and not settled:
         reasons = "；".join(item["reason"] for item in body["refused"])
         raise HTTPException(409, f"{body['message']}：{reasons}")
     return body

@@ -19,7 +19,7 @@
 | 库路由 | 400 | 其他 `StorageError`（种类非法、缺字段、引用不匹配等） |
 | 执行器路由 `executor.py` | 404 | 项目、图节点、形象不存在。删除一个已经不存在的项目也是 404 |
 | 执行器路由 | 400 | `GraphError` 或 `StorageError`（含门禁 `_GateError`）。`confirm` 的查询参数或 JSON 里只要出现 `force_new`（包括 `false`）也是 400，`detail` 为 `force_new is only valid on retry_video_submit` |
-| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成（`submit_dispatched` 或非空 `vendor_task_id` 即拒绝，表示可能已经发给厂商）：409，正文是停止说明加原因。视频节点的 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`（执行器 `_NoVendorKey`，授权前抛出）。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新`。若当时节点仍是 `running` 且没有 `submit_dispatched` / `vendor_task_id`，会先写回 `awaiting_user` 并释放报价 |
+| 执行器路由 | 409 | 删除时节点为 `running`，或 metadata 已有 `submit_dispatched` / 非空 `vendor_task_id`，或 `node_state` 为 `running`：`项目有尚未结束的提交，不能删除`。`stop` 一个正在运行的节点都没停成、也没有按完成入账（取消被拒、厂商不支持、超时或结果不确定、非视频节点已有厂商标记、没有任务号、没有密钥因而无法向厂商确认）：409，`detail` 是 `没有节点被停止` 加上中文原因。明确取消成功，或发现任务已完成并入账时，不是这条 409。视频节点的 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在没有注入适配器且该模型供应商密钥为空时：`未配置视频厂商密钥，不会提交也不会入账`（执行器 `_NoVendorKey`，授权前抛出）。认领比较失败（`_ClaimLost`）：`状态已变化，请刷新`。若当时节点仍是 `running` 且没有 `submit_dispatched` / `vendor_task_id`，会先写回 `awaiting_user` 并释放报价 |
 | 执行器路由 | 422 | `confirm` 或 `retry_video_submit` 的 JSON 把 `force_new` 设成 `null`。字段类型是 `bool`，Pydantic 拒绝 `null`，请求进不了处理函数 |
 | 上传 | 400 | 扩展名不在允许列表 |
 | 上传 | 500 | 落盘失败 |
@@ -248,9 +248,20 @@
 
 ### `POST /api/v2/projects/{project_id}/stop`
 
-没有请求体。只停图上 `running`、且还没有 `submit_dispatched` 或 `vendor_task_id` 的节点。同一事务里把该节点改成 `failed`，metadata `stop_reason` 写成 `用户停止`，并把该节点仍为 `quoted`、尚未有 `actual_amount` 的账本行改成 `skipped`。已是 `spent` 的行不动。
+没有请求体。还没有 `submit_dispatched` 或 `vendor_task_id` 的 `running` 节点，在同一事务里改成 `failed`，metadata `stop_reason` 写成 `用户停止`，并把该节点仍为 `quoted`、尚未有 `actual_amount` 的账本行改成 `skipped`。已是 `spent` 的行不动。
 
-已经落库 `submit_dispatched` 或任务号的节点留在 `running`，原因是 `生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。` 这条不能取消厂商调用。一个都没停成、但有被拒绝的节点：409，`detail` 是 `没有节点被停止` 再加上这些原因。有节点被停：200，体为 `project_id`、`stopped`（节点 id 列表）、`refused`（`node_id` 与 `reason`）、`message`。当前没有 `running` 节点：200，`stopped` 与 `refused` 为空，`message` 含 `当前没有正在运行的节点`。
+视频节点已经落库 `submit_dispatched` 或非空 `vendor_task_id` 时，调用该模型适配器的 `cancel`（测试注入的适配器优先；否则要有供应商密钥）。方舟实现只按官方文档：
+
+- 查询：`GET https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/{id}`。状态为 `queued`、`running`、`cancelled`、`succeeded`、`failed`、`expired`。来源：https://ark.volcengine.com/region:cn-beijing/docs/get-video-generation-task-api
+- 取消：`DELETE` 同一路径。官方写明成功是 HTTP 200，返回 `{}`。`queued` 变为 `cancelled`。`running` 不支持。`succeeded` / `failed` / `cancelled` / `expired` 的 DELETE 是删除记录，之后不能查询。来源：https://www.volcengine.com/docs/82379/1521720 与 https://ark.volcengine.com/region:cn-beijing/docs/cancel-or-delete-video-generation-tasks-api 。该页没有写拒绝时的 HTTP 状态码。
+- 只有查询已是 `cancelled`，或对 `queued` 的 DELETE 返回 HTTP 200 且随后查询为 `cancelled`，才释放报价（账本 `skipped`）并把节点标为 `skipped`（`stop_reason` 为 `用户取消`），同时清掉 `submit_dispatched` 和 `vendor_task_id`。
+- 查询到 `succeeded`，或节点上已有 `result_obtained`，按完成处理：`record_actual` 用原来的 `quote.max`，节点 `done`，不释放报价。DELETE 返回 200 之后若查到 `succeeded`，同样按完成处理，不把 HTTP 200 单独当成取消成功（同一个 200 也表示已完成记录被删掉）。
+- `running` 不调用 DELETE。`failed` / `expired` 不调用 DELETE。非 200、超时、未知状态、200 之后记录无法再查询：不释放报价，节点状态不变。
+- 没有任务号、没有可用适配器或密钥、适配器没有 `cancel`、取消抛错、返回的 `outcome` 无法识别：同样不释放。没有密钥时的原因是 `未配置视频厂商密钥，无法向厂商确认取消结果，报价保持保留，节点状态不变。` 这不是确认接口那句 `未配置视频厂商密钥，不会提交也不会入账`。
+
+非视频节点即使带了 `submit_dispatched` 也不调用取消，原因仍是 `生成请求可能已经发给厂商，不能把它标成已停止。请使用重试提交。`
+
+一个都没停成、也没有 `settled`：409，`detail` 是 `没有节点被停止` 再加上各节点原因，用 `；` 连接。有节点被停或有任务按完成入账：200。体为 `project_id`、`stopped`（节点 id 列表）、`refused`（`node_id` 与 `reason`）、`settled`（按完成入账的 `node_id` 与 `reason`）、`message`。当前没有 `running` 节点：200，`stopped` 与 `refused` 为空，`message` 含 `当前没有正在运行的节点`。再次 stop 一个已经取消的项目走这条，不会第二次释放报价。
 
 ### `PATCH /api/v2/projects/{project_id}/models`
 
@@ -418,7 +429,7 @@
 
 `confirm`、`retry_video_submit`、`raise`、`impact/confirm`、`impact/regenerate` 在密钥为空且没有注入适配器时，都在 `GraphExecutor._require_video_vendor` 里、授权前拒绝。HTTP 是 409，进程内是 `_NoVendorKey`。不入账，也不写 `submit_dispatched`，节点不会因此变成 `done`。只有 `allow_offline_video=True` 才离线按 `quote.max` 入账且 `provider_called` 为 false。`_ClaimLost` 把这次报价标 `skipped`；节点若仍是 `running` 且没有厂商标记，会写回 `awaiting_user`。这次回写走比较并保存，失败会被吞掉并打 warning：节点可能一直 `running`，直到 `recover_stale_submit_claims`（30 分钟）回收。
 
-标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。最后这句只属于已经进入 `submit` 的适配器（例如注入了适配器，客户端又发现没有密钥）。HTTP 缺密钥路径不进入 `submit`，所以不是清标记。清掉时报价改为 `skipped`，节点回到 `awaiting_user`。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。`submit_dispatched` 已经落库时，`stop` 也拒绝这个节点，不能取消厂商调用。
+标记只有在已经写上、并且随后的 `submit` 抛错、且 `_request_was_not_sent` 为真时才清掉。那是 `FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。最后这句只属于已经进入 `submit` 的适配器（例如注入了适配器，客户端又发现没有密钥）。HTTP 缺密钥路径不进入 `submit`，所以不是清标记。清掉时报价改为 `skipped`，节点回到 `awaiting_user`。轮询错误、下载错误、供应商判定 failed / expired、所有 HTTP 4xx、超时，以及其他异常都保留 `submit_dispatched` 和 `vendor_task_id`。4xx 响应体里若有 `id`，先存成 `vendor_task_id` 再抛错。此后普通 `confirm` 不会再 POST。`submit_dispatched` 已经落库时，视频 `stop` 按上一节调用取消；只有明确 `cancelled` 才清标记并释放报价。不确定时标记和报价都留着，`recover_stale_submit_claims` 仍只把过期认领停回 `awaiting_user`，不跳过这笔报价。
 
 镜头时长：`shot_duration` 取节点 metadata。模型 `duration.verified` 不为 true 则不发送时长。整数且落在该模型 min..max 内则用该秒数，否则若 `allow_auto` 则发送 -1。Seedance 2.5 是 4 到 30 秒，区间外为 -1。已核实的其他模型区间：
 
@@ -443,7 +454,7 @@ Seedance 2.5 文档单价（元 / 百万 token）：无视频输入 480p 与 720
 - 图像、VLM、TTS 在 `run` 里仍按 `quote.max` 入账，`provider_called` 为 false。前端在节点 `done` 且 `provider_called === false`（节点上或 `metadata.result` 上）时显示 `已记账·未调用厂商`（`episodeFlow.ts` 的 `OFFLINE_BADGE`）。视频节点没有这道离线入账，除非 `allow_offline_video=True`。
 - `POST /api/sandbox/video` 的请求体没有 `project_id`。当前对所有请求返回 409：`沙盒视频需在项目内生成`。不调用 `VideoClient`，不入账。
 - `POST /api/v2/projects` 的图永远是一集 `ep1` 和上面那六条边。没有按用户集数生成图的参数。
-- `submit_dispatched` 落库之后，`stop` 仍拒绝该节点，不能取消已经可能发给厂商的调用。
+- 方舟取消只覆盖官方文档写明的行为。`running` 不能取消。取消接口没有写拒绝时的 HTTP 状态码，所以非 200 一律不当成成功。DELETE 返回 200 之后如果任务记录消失，无法区分「已取消」和「已完成的记录被删掉」，这时不释放报价。可灵、百炼视频没有在这里核实过取消接口，`cancel` 返回不支持。沙盒视频路由仍是上面的 409，不受这次 stop 影响。
 
 ## 无 HTTP 的存储调用
 

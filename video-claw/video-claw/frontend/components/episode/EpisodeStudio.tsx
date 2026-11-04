@@ -25,7 +25,7 @@ import {
   type ProjectStatus,
   type StopResult,
 } from '@/lib/episodeApi';
-import { confirmThenReload, mergeModelDrafts, nodeLabel, runPayload, statusLabel } from '@/lib/episodeFlow';
+import { confirmThenReload, mergeModelDrafts, nodeLabel, runPayload, statusLabel, stopFeedback } from '@/lib/episodeFlow';
 
 const EMPTY_MODELS = { llm_model: '', image_model: '', video_model: '', tts_model: '' };
 
@@ -228,14 +228,17 @@ export default function EpisodeStudio() {
 
   const onStop = () => run(async () => {
     if (!projectId) return;
-    const result: StopResult = await stopProject(projectId);
-    await reload(projectId);
-    const refused = result.refused.map(item => `${item.node_id}：${item.reason}`).join('；');
-    if (!result.stopped.length) {
-      setNotice(refused ? `${result.message}。${refused}` : result.message);
-      return;
+    let result: StopResult;
+    try {
+      result = await stopProject(projectId);
+    } catch (reason) {
+      await reload(projectId);
+      throw reason;
     }
-    setNotice(refused ? `${result.message}。未停止：${refused}` : result.message);
+    await reload(projectId);
+    const feedback = stopFeedback(result);
+    if (feedback.error) setError(feedback.error);
+    if (feedback.notice) setNotice(feedback.notice);
   });
 
   const onDelete = () => run(async () => {

@@ -102,7 +102,7 @@ Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 aut
 
 手动重试是 `POST /api/v2/projects/{project_id}/nodes/{node_id}/retry_video_submit`。省略请求体是续接。`force_new` 按 Pydantic 的 `bool` 解析：JSON `true`、`1`，以及 `"true"` / `"True"` / `"yes"` / `"on"` / `"1"` / `"y"` / `"t"`（大小写不限）才释放旧报价并重新授权、然后新开；JSON `false`、`0`，以及 `"false"` / `"no"` / `"off"` / `"0"` / `"n"` / `"f"` 仍是续接。`null` 是 422。前端送布尔值。`confirm` 里出现 `force_new` 一律 400。新报价超预算时标记留着，用 raise 继续。认领 TTL 30 分钟，Seedance 整次提交 20 分钟停。进程启动会回收过期认领；没有过期行时再启动一次是空操作。细节见 confirm_video.md。
 
-`impact/confirm` 和 `impact/regenerate` 在无密钥时对视频节点同样 409，令牌不占用。图像节点自己的 `run` 仍入账，界面可显示「已记账·未调用厂商」。确认失败后前端会重新拉 status。`POST /api/sandbox/video` 没有 `project_id`，一律 409「沙盒视频需在项目内生成」，不调厂商。一集图是固定的 `ep1`。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。认领比较失败且节点仍是 `running`、又没有厂商标记时，会写回 `awaiting_user` 并释放报价，不用等 30 分钟。这次回写若比较并保存失败，会打 warning，节点留在 `running`，直到 30 分钟回收。
+`impact/confirm` 和 `impact/regenerate` 在无密钥时对视频节点同样 409，令牌不占用。图像节点自己的 `run` 仍入账，界面可显示「已记账·未调用厂商」。确认失败后前端会重新拉 status。`POST /api/sandbox/video` 没有 `project_id`，一律 409「沙盒视频需在项目内生成」，不调厂商。一集图是固定的 `ep1`。`submit_dispatched` 落库后，视频节点的 `stop` 才调用方舟取消：只有排队任务被明确取消才释放报价并把节点标为 `skipped`；运行中官方不支持；失败、不支持、超时或结果不确定时保持原状且不释放报价，一个都没停成则 409。查询到已完成则按完成入账，不释放报价。非视频节点仍拒绝。认领比较失败且节点仍是 `running`、又没有厂商标记时，会写回 `awaiting_user` 并释放报价，不用等 30 分钟。这次回写若比较并保存失败，会打 warning，节点留在 `running`，直到 30 分钟回收。
 
 ---
 

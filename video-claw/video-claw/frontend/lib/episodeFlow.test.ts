@@ -13,6 +13,7 @@ import {
   retryRequest,
   runPayload,
   statusLabel,
+  stopFeedback,
 } from './episodeFlow';
 
 describe('episode view', () => {
@@ -114,5 +115,25 @@ describe('episode view', () => {
       llm_model: 'server-moved',
     });
     expect(again.drafts.llm_model).toBe('草稿模型');
+  });
+
+  it('shows a refused cancel in the error line and a finished task as settled', () => {
+    const refused = stopFeedback({
+      message: '没有节点被停止',
+      stopped: [],
+      refused: [{ node_id: 'video', reason: '任务正在运行。官方文档写明 running 状态不支持取消或删除，没有调用删除。报价保持保留，节点状态不变。' }],
+    });
+    expect(refused.error).toContain('报价保持保留');
+    expect(refused.error).toContain('节点状态不变');
+    expect(refused.notice).toContain('没有节点被停止');
+    const settled = stopFeedback({
+      message: '有厂商任务已完成，已按完成入账，没有释放报价。',
+      stopped: [],
+      refused: [],
+      settled: [{ node_id: 'video', reason: '查询到任务已成功。报价不能释放。' }],
+    });
+    expect(settled.error).toBe('');
+    expect(settled.notice).toContain('没有释放报价');
+    expect(settled.notice).toContain('查询到任务已成功');
   });
 });

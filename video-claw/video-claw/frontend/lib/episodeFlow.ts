@@ -109,6 +109,26 @@ export function runPayload(node: NodeView): Record<string, unknown> {
   return body;
 }
 
+/** Text for the stop button. Refusals stay on the error line; a settled task is not described as stopped. */
+export function stopFeedback(result: {
+  message: string;
+  stopped: string[];
+  refused: Array<{ node_id: string; reason: string }>;
+  settled?: Array<{ node_id: string; reason: string }>;
+}): { error: string; notice: string } {
+  const refused = result.refused
+    .map(item => `${item.node_id}：${item.reason}`)
+    .filter(part => part.trim())
+    .join('；');
+  const settled = (result.settled || [])
+    .map(item => `${item.node_id}：${item.reason}`)
+    .filter(part => part.trim())
+    .join('；');
+  const notice = [result.message, settled].filter(part => part && part.trim()).join('。');
+  const error = refused ? (result.stopped.length ? `未停止：${refused}` : refused) : '';
+  return { error, notice };
+}
+
 /** Plain confirm never carries force_new. */
 export function confirmRequest(): Record<string, never> {
   return {};

@@ -129,6 +129,16 @@ class ArkVideoAdapter(_VideoAdapter):
             raise TypeError("fetch expects {'url', 'save_path'}")
         return client.download(ref["url"], ref["save_path"])
 
+    def cancel(self, task_id: str, *, transport: Any = None) -> dict:
+        """Cancel one Ark video task using the documented DELETE.
+
+        ``SeedanceVideoClient.cancel_task`` queries first. It deletes only a
+        ``queued`` task, then queries again. A running task is not deleted:
+        the official page says DELETE is not supported for ``running``.
+        """
+        client = self._seedance(transport)
+        return client.cancel_task(task_id, transport=transport)
+
     def _seedance(self, transport: Any):
         if transport is not None and hasattr(transport, "seedance_client"):
             return transport.seedance_client

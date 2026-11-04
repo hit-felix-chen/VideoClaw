@@ -106,6 +106,7 @@ def api(tmp_path, client, monkeypatch):
 
     monkeypatch.setattr(video_seedance.requests, "post", explode)
     monkeypatch.setattr(video_seedance.requests, "get", explode)
+    monkeypatch.setattr(video_seedance.requests, "delete", explode)
     data = tmp_path / "episode-api"
 
     app.dependency_overrides[get_library_connection] = use_data_dir(data)
@@ -593,3 +594,360 @@ def test_status_answers_concurrent_reads(api):
         thread.join(5)
         assert not thread.is_alive()
     assert codes == [200] * 6
+
+
+class _ScriptedCancel:
+    def __init__(self, outcome, message, video_url=None, exc=None):
+        self.outcome = outcome
+        self.message = message
+        self.video_url = video_url
+        self.exc = exc
+        self.calls = []
+
+    def cancel(self, task_id, *, transport=None):
+        self.calls.append(task_id)
+        if self.exc is not None:
+            raise self.exc
+        return {
+            "outcome": self.outcome,
+            "message": self.message,
+            "video_url": self.video_url,
+            "task_status": None,
+        }
+
+
+def _video_rows(status):
+    return [row for row in status["ledger"] if row["node_id"] == "video"]
+
+
+def _hold_dispatched_video(data, project_id, *, task_id="task-1", result_url=None, quote=70):
+    from storage.ledger import QUOTED, LedgerStore
+
+    conn = Database.connect(data)
+    try:
+        graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
+        if graph.node("video").status != NodeStatus.RUNNING:
+            graph.transition("video", NodeStatus.RUNNING)
+        graph.update_metadata("video", submit_dispatched=True, vendor_task_id=task_id)
+        if result_url:
+            graph.update_metadata("video", result_obtained=result_url)
+        GraphStore.save(conn, project_id, graph.to_dict())
+        stamp = "2026-06-01T00:00:00.000000Z"
+        updated = conn.execute(
+            """
+            UPDATE node_state SET status = ?, updated_at = ?
+            WHERE project_id = ? AND node_id = ?
+            """,
+            ("running", stamp, project_id, "video"),
+        )
+        if updated.rowcount != 1:
+            conn.execute(
+                """
+                INSERT INTO node_state (project_id, node_id, status, pinned, updated_at)
+                VALUES (?, 'video', 'running', 0, ?)
+                """,
+                (project_id, stamp),
+            )
+        LedgerStore.add(
+            conn,
+            project_id,
+            kind="video",
+            status=QUOTED,
+            model="doubao-seedance-2-5-260628",
+            node_id="video",
+            quote_amount=quote,
+            currency="CNY",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _use_cancel_adapter(monkeypatch, adapter):
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn, video_adapter=adapter),
+    )
+
+
+def test_stop_releases_a_quote_only_when_cancel_succeeds(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id)
+    cancel = _ScriptedCancel("cancelled", "排队中的任务已取消，随后查询到状态为 cancelled。")
+    _use_cancel_adapter(monkeypatch, cancel)
+
+    stopped = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert stopped.status_code == 200, stopped.text
+    body = stopped.json()
+    assert body["stopped"] == ["video"]
+    assert body["refused"] == []
+    assert "报价已释放" in body["message"]
+    assert cancel.calls == ["task-1"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    video = _node(status, "video")
+    assert video["status"] == "skipped"
+    assert video["metadata"]["stop_reason"] == "用户取消"
+    assert "submit_dispatched" not in video["metadata"]
+    assert "vendor_task_id" not in video["metadata"]
+    rows = _video_rows(status)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["actual_amount"] is None
+    assert status["budget"]["committed"] == 0
+
+    again = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert again.status_code == 200, again.text
+    assert again.json()["stopped"] == []
+    assert "没有正在运行" in again.json()["message"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "skipped"
+    assert _video_rows(status)[0]["status"] == "skipped"
+    assert not any(row["status"] == "spent" for row in _video_rows(status))
+
+
+def test_stop_keeps_the_quote_when_cancel_is_rejected_or_unsupported(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id, task_id="task-rejected")
+    cancel = _ScriptedCancel(
+        "rejected",
+        "厂商没有返回取消成功（HTTP 400）。该状态码的含义文档未说明，不能当成取消成功。报价保持保留，节点状态不变。",
+    )
+    _use_cancel_adapter(monkeypatch, cancel)
+    refused = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert "没有节点被停止" in detail
+    assert "报价保持保留" in detail
+    assert "节点状态不变" in detail
+    assert "不会提交也不会入账" not in detail
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    video = _node(status, "video")
+    assert video["status"] == "running"
+    assert video["metadata"]["submit_dispatched"] is True
+    assert video["metadata"]["vendor_task_id"] == "task-rejected"
+    assert _video_rows(status)[0]["status"] == "quoted"
+
+    bare = type("NoCancel", (), {})()
+    _use_cancel_adapter(monkeypatch, bare)
+    unsupported = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert unsupported.status_code == 409
+    assert "没有已核实的取消接口" in unsupported.json()["detail"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "running"
+    assert _video_rows(status)[0]["status"] == "quoted"
+
+
+def test_stop_keeps_the_quote_when_cancel_is_uncertain(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id, task_id="task-timeout")
+    cancel = _ScriptedCancel("uncertain", "查询超时。报价保持保留，节点状态不变。", exc=TimeoutError("cancel hung"))
+    _use_cancel_adapter(monkeypatch, cancel)
+    refused = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert refused.status_code == 409, refused.text
+    assert "报价保持保留" in refused.json()["detail"]
+    assert "节点状态不变" in refused.json()["detail"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "running"
+    assert _video_rows(status)[0]["status"] == "quoted"
+    assert status["budget"]["committed"] == 70
+
+    conn = Database.connect(data)
+    try:
+        released = GraphExecutor.recover_stale_submit_claims(conn)
+    finally:
+        conn.close()
+    assert "video" in released
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    video = _node(status, "video")
+    assert video["status"] == "awaiting_user"
+    assert video["metadata"]["submit_dispatched"] is True
+    assert video["metadata"]["vendor_task_id"] == "task-timeout"
+    assert _video_rows(status)[0]["status"] == "quoted"
+
+
+def test_stop_books_a_task_that_finished_instead_of_releasing(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id, task_id="task-done")
+    cancel = _ScriptedCancel(
+        "completed",
+        "查询到任务已成功。报价不能释放。",
+        video_url="https://cdn.example/finished.mp4",
+    )
+    _use_cancel_adapter(monkeypatch, cancel)
+    settled = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert settled.status_code == 200, settled.text
+    body = settled.json()
+    assert body["stopped"] == []
+    assert body["settled"][0]["node_id"] == "video"
+    assert "没有释放报价" in body["message"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    video = _node(status, "video")
+    assert video["status"] == "done"
+    assert video["metadata"]["result_obtained"] == "https://cdn.example/finished.mp4"
+    assert "submit_dispatched" not in video["metadata"]
+    rows = _video_rows(status)
+    assert rows[0]["status"] == "spent"
+    assert rows[0]["actual_amount"] == 70
+    assert status["budget"]["committed"] == 0
+
+
+def test_stop_does_not_cancel_when_the_result_is_already_stored(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(
+        data,
+        project_id,
+        task_id="task-stored",
+        result_url="https://cdn.example/already.mp4",
+    )
+
+    class Explode:
+        def cancel(self, task_id, *, transport=None):
+            raise AssertionError(task_id)
+
+    _use_cancel_adapter(monkeypatch, Explode())
+    settled = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert settled.status_code == 200, settled.text
+    assert "没有释放报价" in settled.json()["message"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "done"
+    assert _video_rows(status)[0]["status"] == "spent"
+    assert _video_rows(status)[0]["actual_amount"] == 70
+
+
+def test_stop_without_a_task_id_or_a_key_does_not_release(api, priced, monkeypatch):
+    import config as config_module
+
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id, task_id=None)
+    cancel = _ScriptedCancel("cancelled", "should not be called")
+    _use_cancel_adapter(monkeypatch, cancel)
+    missing = client.post(f"/api/v2/projects/{project_id}/stop")
+    assert missing.status_code == 409
+    assert "还没有任务号" in missing.json()["detail"]
+    assert cancel.calls == []
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "running"
+    assert _video_rows(status)[0]["status"] == "quoted"
+
+    other = _create(client, name="没有密钥")["project"]["id"]
+    _run_until_video(client, other)
+    _hold_dispatched_video(data, other, task_id="task-no-key")
+    monkeypatch.setattr(config_module.Config, "ARK_API_KEY", "", raising=False)
+    monkeypatch.setattr(config_module.Config, "DASHSCOPE_API_KEY", "", raising=False)
+    monkeypatch.setattr(config_module.Config, "KLING_API_KEY", "", raising=False)
+    monkeypatch.setattr(
+        "api.routers.executor._executor",
+        lambda conn: GraphExecutor(conn),
+    )
+    no_key = client.post(f"/api/v2/projects/{other}/stop")
+    assert no_key.status_code == 409, no_key.text
+    assert "未配置视频厂商密钥，无法向厂商确认取消结果" in no_key.json()["detail"]
+    assert "不会提交也不会入账" not in no_key.json()["detail"]
+    status = client.get(f"/api/v2/projects/{other}/status").json()
+    assert _node(status, "video")["status"] == "running"
+    assert _video_rows(status)[0]["status"] == "quoted"
+
+
+def test_stop_cancel_is_not_overwritten_by_a_late_submit(api, priced, monkeypatch):
+    client, _data, _adapter = api
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Adapter:
+        def __init__(self):
+            self.cancel_calls = []
+
+        def submit(self, spec, params, *, transport=None):
+            on_task = params.get("on_task")
+            if callable(on_task):
+                on_task("task-race")
+            entered.set()
+            assert release.wait(5)
+            return "https://cdn.example/late.mp4"
+
+        def cancel(self, task_id, *, transport=None):
+            self.cancel_calls.append(task_id)
+            return {
+                "outcome": "cancelled",
+                "message": "排队中的任务已取消，随后查询到状态为 cancelled。",
+                "video_url": None,
+                "task_status": "cancelled",
+            }
+
+    adapter = Adapter()
+    _use_cancel_adapter(monkeypatch, adapter)
+    project_id = _create(client)["project"]["id"]
+    held = _run_until_video(client, project_id)
+    assert held["gate"] == "confirm"
+    box = {}
+
+    def confirm():
+        box["response"] = client.post(f"/api/v2/projects/{project_id}/nodes/video/confirm")
+
+    thread = threading.Thread(target=confirm, daemon=True)
+    thread.start()
+    assert entered.wait(5)
+    stopped = client.post(f"/api/v2/projects/{project_id}/stop")
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["stopped"] == ["video"]
+    assert adapter.cancel_calls == ["task-race"]
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "skipped"
+    rows = _video_rows(status)
+    assert rows and all(row["status"] == "skipped" for row in rows)
+    assert not any(row["status"] == "spent" for row in rows)
+    assert box["response"].json().get("spent") is not True
+
+
+def test_concurrent_stops_release_the_quote_once(api, priced, monkeypatch):
+    client, data, _adapter = api
+    project_id = _create(client)["project"]["id"]
+    _run_until_video(client, project_id)
+    _hold_dispatched_video(data, project_id, task_id="task-once")
+    barrier = threading.Barrier(2)
+
+    class Adapter:
+        def cancel(self, task_id, *, transport=None):
+            barrier.wait(5)
+            return {
+                "outcome": "cancelled",
+                "message": "排队中的任务已取消，随后查询到状态为 cancelled。",
+                "video_url": None,
+                "task_status": "cancelled",
+            }
+
+    _use_cancel_adapter(monkeypatch, Adapter())
+    results = []
+
+    def once():
+        results.append(client.post(f"/api/v2/projects/{project_id}/stop"))
+
+    threads = [threading.Thread(target=once, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert len(results) == 2
+    assert all(response.status_code in {200, 409} for response in results)
+    status = client.get(f"/api/v2/projects/{project_id}/status").json()
+    assert _node(status, "video")["status"] == "skipped"
+    rows = _video_rows(status)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "skipped"
+    assert rows[0]["actual_amount"] is None

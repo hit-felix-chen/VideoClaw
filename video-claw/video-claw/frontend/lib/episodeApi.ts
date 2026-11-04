@@ -74,6 +74,7 @@ export interface ModelUpdateResult {
 export interface StopResult {
   stopped: string[];
   refused: Array<{ node_id: string; reason: string }>;
+  settled?: Array<{ node_id: string; reason: string }>;
   message: string;
 }
 

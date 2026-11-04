@@ -34,7 +34,7 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 缺密钥且没有注入适配器是上面的 409：不写标记，也不入账。`allow_offline_video=True` 的进程内 `confirm` 不写标记，但会花掉已保留的 `quote.max`。认领比较失败（`_ClaimLost`）时释放这次报价；若节点仍是 `running` 且没有 `submit_dispatched` / `vendor_task_id`，写回 `awaiting_user`，不用等 30 分钟回收。这次回写如果比较并保存失败，会打 warning，节点会留在 `running`，直到 `recover_stale_submit_claims`（30 分钟）回收。
 
-标记只有在已经写成 true、并且随后的 `submit` 被 `_request_was_not_sent` 判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是 HTTP 409。这时报价改为 `skipped`，节点回到 `awaiting_user`。轮询失败、下载失败、供应商 failed 或 expired、所有 HTTP 4xx、超时，都保留标记。4xx 体里若有 `id`，会记成 `vendor_task_id`。之后普通 confirm 不会再 POST。`submit_dispatched` 落库后 `stop` 仍拒绝，不能取消厂商调用。
+标记只有在已经写成 true、并且随后的 `submit` 被 `_request_was_not_sent` 判定为没发出 HTTP 时才清掉：`FileNotFoundError`、`UnsupportedParam`、`SubmitNotSent`，或错误文本含 `reference image file is missing`、`model is not registered`、`ARK_API_KEY not set`。`ARK_API_KEY not set` 只属于已经进入 `submit` 的适配器，不是 HTTP 409。这时报价改为 `skipped`，节点回到 `awaiting_user`。轮询失败、下载失败、供应商 failed 或 expired、所有 HTTP 4xx、超时，都保留标记。4xx 体里若有 `id`，会记成 `vendor_task_id`。之后普通 confirm 不会再 POST。`submit_dispatched` 落库后，视频 `stop` 按方舟文档尝试取消，见下文「提交之后停止」。
 
 ## 手动重试
 
@@ -50,7 +50,25 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 认领 TTL 是 30 分钟。Seedance 整次提交在 20 分钟停下，避免轮询活过认领。超过 30 分钟且没有标记的 `running` 视为提交前就死了，未结算报价被跳过，节点可以再认领。有标记的过期认领不再次提交。进程启动时 `recover_stale_submit_claims` 跑一次；没有过期行时返回空列表，再启动一次仍是空操作。下一次 confirm 在 TTL 之后也会回收。
 
-认领在写入完成之前被别人改掉（例如同时 `stop`）时，confirm 返回 409：`状态已变化，请刷新`。`stop` 会在同一事务里把该节点仍为 `quoted` 的账本行改成 `skipped`。
+认领在写入完成之前被别人改掉（例如同时 `stop`，且当时还没有 `submit_dispatched`）时，confirm 返回 409：`状态已变化，请刷新`。这次 `stop` 会在同一事务里把该节点仍为 `quoted` 的账本行改成 `skipped`。
+
+## 提交之后停止
+
+`POST /api/v2/projects/{project_id}/stop`。还没写上 `submit_dispatched` 的 `running` 节点仍标成 `failed`（`stop_reason` 为 `用户停止`），并释放未结算报价。
+
+视频节点已经写上标记或任务号时，调用适配器的 `cancel`。方舟只按官方文档做：
+
+- 查询 `GET /api/v3/contents/generations/tasks/{id}`。来源：https://ark.volcengine.com/region:cn-beijing/docs/get-video-generation-task-api
+- 只有状态 `queued` 才 `DELETE` 同一路径。成功页写的是 HTTP 200 且体为 `{}`，排队任务变为 `cancelled`。来源：https://www.volcengine.com/docs/82379/1521720 与 https://ark.volcengine.com/region:cn-beijing/docs/cancel-or-delete-video-generation-tasks-api
+- 随后再查询，状态确是 `cancelled`（或一开始就是 `cancelled`）才把报价改成 `skipped`，节点改成 `skipped`，`stop_reason` 为 `用户取消`。
+- `running` 官方写明不支持删除，不调用 DELETE。
+- `succeeded`，或节点上已经有 `result_obtained`，按完成入账（`spent` + `done`），不释放报价。取消请求发出后若查到已成功，同样按完成处理。
+- `failed` / `expired` 不是取消。对它们调用 DELETE 会删掉记录且之后不能查询，因此不调用。
+- 非 200、超时、未知状态、DELETE 之后记录消失：结果不确定，不释放报价，节点状态不变。取消接口文档没有写拒绝时的 HTTP 状态码。
+
+没有任务号、没有密钥、或该厂商没有已核实的取消接口：同样不释放，HTTP 409，原因写明报价保持保留。这和确认视频时的 409 `未配置视频厂商密钥，不会提交也不会入账` 不是同一句：那里是授权前拒绝，这里是报价已经占着、不能把它当成已经取消。
+
+非视频节点即使带了标记也不会去调用取消。一个都没停成、也没有按完成入账时，409 的 `detail` 是 `没有节点被停止` 加上上述原因。
 
 ## 各模型已核实时长
 

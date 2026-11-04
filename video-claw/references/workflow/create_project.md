@@ -36,7 +36,7 @@ curl -X POST "http://127.0.0.1:8000/api/library/projects" \
 
 ## 停止、改模型、改提示词
 
-`POST /api/v2/projects/{project_id}/stop` 只把尚未发给厂商的 `running` 节点标成 `failed`（`stop_reason` 为 `用户停止`），并在同一事务里把该节点 `quoted` 且还没有实际金额的账本行改成 `skipped`。已有 `submit_dispatched` 或任务号的节点停不掉，全部如此时接口是 409。不能靠 stop 取消厂商调用。
+`POST /api/v2/projects/{project_id}/stop` 把尚未发给厂商的 `running` 节点标成 `failed`（`stop_reason` 为 `用户停止`），并在同一事务里把该节点 `quoted` 且还没有实际金额的账本行改成 `skipped`。视频节点已经 `submit_dispatched` 时会按方舟文档尝试取消排队中的任务；只有明确变成 `cancelled` 才释放报价并把节点标为 `skipped`。运行中不支持取消。失败、不支持、超时或结果不确定时节点和报价都保持原样，一个都没处理成则 409。发现任务已完成则入账，不释放报价。细节见 [confirm_video.md](confirm_video.md)。
 
 `PATCH /api/v2/projects/{project_id}/models` 的体可以含 `llm_model`、`image_model`、`video_model`、`tts_model`，以及 `nodes`（节点 id 到模型 id）。未注册的 id 是 400。`running`、`awaiting_user`、或仍留着厂商任务的节点不改。
 
