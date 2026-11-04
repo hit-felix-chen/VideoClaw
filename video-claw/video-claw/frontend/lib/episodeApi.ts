@@ -192,6 +192,27 @@ export async function updatePrompt(projectId: string, nodeId: string, text: stri
   );
 }
 
+export interface FrameAsset {
+  id: string;
+  name: string;
+}
+
+export async function listFrameAssets(projectId: string): Promise<FrameAsset[]> {
+  const query = new URLSearchParams({ project_id: projectId, include_global: 'true' });
+  const [assets, images] = await Promise.all([
+    send<{ assets?: Array<{ id?: string; name?: string }> }>(`/api/library/assets?${query.toString()}`),
+    send<{ images?: Array<{ asset_id?: string | null }> }>('/api/library/images'),
+  ]);
+  const withImage = new Set(
+    (images.images || [])
+      .map(row => row.asset_id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0),
+  );
+  return (assets.assets || [])
+    .filter(asset => typeof asset.id === 'string' && withImage.has(asset.id))
+    .map(asset => ({ id: asset.id as string, name: asset.name?.trim() || (asset.id as string) }));
+}
+
 export async function runNode(
   projectId: string,
   nodeId: string,

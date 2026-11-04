@@ -10,6 +10,8 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 没有密钥、也没有注入适配器时，这条和 `retry_video_submit`、视频节点的 `raise`、`impact/confirm`、`impact/regenerate` 都是 409：`未配置视频厂商密钥，不会提交也不会入账`。账本不会多出视频行，也不写 `submit_dispatched`。进程内同一个检查，默认也拒绝。`GraphExecutor(..., allow_offline_video=True)` 才按 `quote.max` 入账，而且不要求先有结果 URL。没有被这道 409 拦住时，这一步才 `authorize` 并写入账本。入账金额是 `quote.max`，没有结果 URL 也会记。
 
+首帧或首尾帧在授权之前再查一次。资产文件没了，或模型能力不够，是 400 和中文原因，不入账。通过之后，提交前把资产 id 换成磁盘路径。Seedance 的 `content.role` 用 `first_frame` / `last_frame`，`ratio` 为 `adaptive`。见 [keyframes.md](keyframes.md)。
+
 用户拒绝、且还没有账本行：
 
 ```bash

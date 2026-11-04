@@ -28,6 +28,8 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 `@资产名` 和 `@资产名/形象名` 在这次调用里解析。见 [segment_refs.md](segment_refs.md)。
 
+视频节点还可以在请求体里带 `first_frame_asset_id` 和 `last_frame_asset_id`（资产库已有图片）。`continue_from_tail: true` 改用上一镜头已保存的尾帧资产，不能再手选首帧。能力不够、资产不存在、没有上一镜头，或和参考图混用时，`run` 直接 400，中文 `detail`，不写账本。见 [keyframes.md](keyframes.md)。
+
 ## 报价
 
 没有文档 API 价格（未核实、没有币种、或没有 http(s) 来源）时，`min` / `max` 为 null，`unknown_models` 带上该 id。不要编一个 0。

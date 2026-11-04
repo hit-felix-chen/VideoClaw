@@ -473,6 +473,11 @@ class VideoDirectorAgent(AgentInterface):
                 "model_id": model_id,
                 "error": "model is not registered",
             }
+        from core.keyframes import runner_result
+
+        framed = runner_result(spec, call)
+        if framed is not None:
+            return framed
         paths = _reference_asset_ids(call.get("references"))
         limit = spec.max_reference_images
         truncated = False

@@ -154,6 +154,22 @@ Pinned nodes are listed by graph `impact` and are not regenerated. Pending and s
 
 `VideoDirectorAgent.execute_node` turns resolved mentions into reference asset ids, in mention order, first match only. It does not search file-name prefixes. `GraphExecutor` turns those ids into on-disk image files immediately before `adapter.submit`. A missing file skips the quote and leaves the node awaiting the user. The asset id is not sent as a URL.
 
+### Keyframe plugin
+
+`core/keyframes.py`. A video `run` may name `first_frame_asset_id` and, only together with it, `last_frame_asset_id`. Both are asset ids that already have an `ImageStore` row whose `BlobStore` file is on disk. The plugin does not extract a frame, upload a file, or call `return_last_frame`. An empty string clears a stored id. Omitting the field keeps the id already on the node.
+
+The check runs in `run_node` and again in `confirm`, both before `ProjectBudget.authorize`. A refusal is `_GateError` (HTTP 400) with a Chinese message, no ledger row, and no `submit_dispatched`. It does not replace the no-key 409: `_require_video_vendor` / `_NoVendorKey` still runs first on confirm, and `allow_offline_video=True` is still the only in-process opt-in that books `quote.max` with `provider_called` false. The offline result keeps the asset ids.
+
+Support is the model's `adapter_abilities` (`abilities` when that list is empty). Missing `first_frame_i2v` refuses with `模型 {id} 不支持首帧生视频`. Missing `start_end_frame_i2v` refuses with `模型 {id} 不支持首尾帧生视频`. `wan2.7-r2v` has neither. `wan2.6-i2v-flash` has only the first. Seedance 2.5 (`doubao-seedance-2-5-260628`) has both.
+
+Resolved `@` mentions and keyframes are refused together: `首帧与参考图不能同时使用`. A last frame without a first frame is `只指定了尾帧，没有首帧`. An id with no library image is `首帧资产不在资产库中` or `尾帧资产不在资产库中`.
+
+On submit, ids become disk paths (`image_path`, `last_image_path`) and `reference_image_paths` is empty. Seedance content uses the official Ark fields: `type` `image_url`, `image_url.url`, `role` `first_frame` or `last_frame`. For Seedance 2.5, `ratio_by_mode` allows only `adaptive` on these two modes, so an omitted ratio is sent as `adaptive`. A documented price is unchanged: a still image is not `includes_video_input`. A model with no documented API price still has no min/max.
+
+The episode node card lists library assets that already have an image and sends the choice on `run`.
+
+`continue_from_tail` copies the previous shot's stored `last_frame_asset_id` onto this shot's `first_frame_asset_id` when the quote is built. Confirm keeps that copied id. It does not read a generated video. One continuity predecessor is the previous shot. Several continuity predecessors are `有多个上一镜头，不能确定尾帧`. With none, the previous video node in the same episode (topological order) is used. No previous shot is `没有上一镜头，不能续接尾帧`. A previous shot with no stored tail asset is `上一镜头没有尾帧资产，不能续接`. A hand-picked first frame together with continuation is `续接尾帧时不能再手选首帧`. The copied id then goes through the same ability, library, and reference checks as a hand-picked first frame. A blocking edge still blocks the node; the tail asset itself does not require the previous shot to be `done`.
+
 ### Model registry and keys
 
 `models/middle/registry.py`, loaded from `models/config_model.py` `MODEL_CONFIG`, then builtin `SpecCatalog.seedance_25()` and `SpecCatalog.edge_tts()`, then `models/middle/official.py`.
@@ -168,7 +184,7 @@ Config defaults (`config.py` `DEFAULT_CONFIG["models"]`):
 | `video`, `video_first_frame`, `video_start_end` | `wan2.7-i2v` |
 | `video_reference` | `doubao-seedance-2-5-260628` |
 
-`generation.video_generation_mode` still defaults to `first_frame`. The graph video path does not read that key. `VideoDirectorAgent.execute_node` sets `ability` to `reference_to_video`. Submit uses `generation_mode` `reference` when reference files exist, otherwise `text`.
+`generation.video_generation_mode` still defaults to `first_frame`. The graph video path does not read that key. `VideoDirectorAgent.execute_node` sets `ability` to `reference_to_video` when the call has no keyframe asset. Submit uses `generation_mode` `reference` when reference files exist, otherwise `text`. A `first_frame_asset_id` switches that call to `first_frame_i2v` / `generation_mode` `first_frame`. Adding `last_frame_asset_id` switches it to `start_end_frame_i2v` / `generation_mode` `start_end_frame`. See Keyframe plugin below.
 
 `OpenAICompatLLM.DEFAULT_MODEL` is `deepseek-flash`. Every LLM provider goes through `OpenAICompatibleAdapter.complete` (`chat.completions`). `vlm_*.py` is still the VLM path; the LLM client does not import it.
 

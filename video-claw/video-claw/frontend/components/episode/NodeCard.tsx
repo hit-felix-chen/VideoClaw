@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import RetryPanel from '@/components/episode/RetryPanel';
-import type { GraphNode, NodeActionResult } from '@/lib/episodeApi';
+import type { FrameAsset, GraphNode, NodeActionResult } from '@/lib/episodeApi';
 import {
   OFFLINE_BADGE,
   canConfirmVideo,
@@ -13,6 +13,7 @@ import {
   offlineUncalled,
   reservationCopy,
   statusLabel,
+  type FrameChoice,
 } from '@/lib/episodeFlow';
 
 function resultText(node: GraphNode): string {
@@ -32,6 +33,7 @@ export default function NodeCard({
   onDraft,
   onSavePrompt,
   onRun,
+  frameAssets,
   onConfirm,
   onDecline,
   onRaise,
@@ -46,7 +48,8 @@ export default function NodeCard({
   draft: string;
   onDraft: (text: string) => void;
   onSavePrompt: () => void;
-  onRun: () => void;
+  onRun: (frames?: FrameChoice) => void;
+  frameAssets?: FrameAsset[];
   onConfirm: () => void;
   onDecline: () => void;
   onRaise: (cap: number) => void;
@@ -56,6 +59,22 @@ export default function NodeCard({
   ledger?: Array<Record<string, unknown>>;
 }) {
   const [cap, setCap] = useState('');
+  const savedFirst = typeof node.metadata?.first_frame_asset_id === 'string' ? node.metadata.first_frame_asset_id : '';
+  const savedLast = typeof node.metadata?.last_frame_asset_id === 'string' ? node.metadata.last_frame_asset_id : '';
+  const savedContinue = node.metadata?.continue_from_tail === true;
+  const [firstFrame, setFirstFrame] = useState(savedFirst);
+  const [lastFrame, setLastFrame] = useState(savedLast);
+  const [continueTail, setContinueTail] = useState(savedContinue);
+  useEffect(() => {
+    setFirstFrame(savedFirst);
+    setLastFrame(savedLast);
+    setContinueTail(savedContinue);
+  }, [node.id, savedFirst, savedLast, savedContinue]);
+  const frames: FrameChoice = {
+    first_frame_asset_id: continueTail ? '' : firstFrame,
+    last_frame_asset_id: continueTail || firstFrame ? lastFrame : '',
+    continue_from_tail: continueTail,
+  };
   const quote = node.quote || (action?.node_id === node.id ? action.quote : null);
   const showRetry = needsVideoRetry(node);
   const showConfirm = canConfirmVideo({ ...node, quote: quote || node.quote });
@@ -110,11 +129,59 @@ export default function NodeCard({
         <p className="text-sm text-gray-700">厂商已返回结果。</p>
       )}
 
+      {isVideoNode(node) && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="block text-xs text-gray-500">
+            首帧资产
+            <select
+              value={continueTail ? '' : firstFrame}
+              disabled={continueTail}
+              onChange={event => {
+                const next = event.target.value;
+                setFirstFrame(next);
+                if (!next) setLastFrame('');
+              }}
+              className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-800"
+            >
+              <option value="">不使用首帧</option>
+              {(frameAssets || []).map(asset => (
+                <option key={asset.id} value={asset.id}>{asset.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs text-gray-500">
+            尾帧资产
+            <select
+              value={continueTail || firstFrame ? lastFrame : ''}
+              disabled={!continueTail && !firstFrame}
+              onChange={event => setLastFrame(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-800 disabled:bg-gray-50"
+            >
+              <option value="">不使用尾帧</option>
+              {(frameAssets || []).map(asset => (
+                <option key={asset.id} value={asset.id}>{asset.name}</option>
+              ))}
+            </select>
+          </label>
+          {(frameAssets || []).length === 0 && (
+            <p className="text-xs text-gray-400 sm:col-span-2">资产库里还没有带图片的素材。</p>
+          )}
+          <label className="flex items-center gap-2 text-xs text-gray-600 sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={continueTail}
+              onChange={event => setContinueTail(event.target.checked)}
+            />
+            续接上一镜头的尾帧作为首帧
+          </label>
+        </div>
+      )}
+
       {executable && (
         <button
           type="button"
           disabled={busy}
-          onClick={onRun}
+          onClick={() => onRun(isVideoNode(node) ? frames : undefined)}
           className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
         >
           运行

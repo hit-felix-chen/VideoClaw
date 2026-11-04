@@ -10,6 +10,7 @@ import {
   deleteProject,
   errorMessage,
   getProjectStatus,
+  listFrameAssets,
   listProjects,
   raiseBudget,
   retryVideoSubmit,
@@ -18,6 +19,7 @@ import {
   updateModels,
   updatePrompt,
   confirmNode,
+  type FrameAsset,
   type GraphNode,
   type ModelUpdateResult,
   type NodeActionResult,
@@ -25,7 +27,7 @@ import {
   type ProjectStatus,
   type StopResult,
 } from '@/lib/episodeApi';
-import { confirmThenReload, mergeModelDrafts, nodeLabel, runPayload, statusLabel, stopFeedback } from '@/lib/episodeFlow';
+import { confirmThenReload, mergeModelDrafts, nodeLabel, runPayload, statusLabel, stopFeedback, type FrameChoice } from '@/lib/episodeFlow';
 
 const EMPTY_MODELS = { llm_model: '', image_model: '', video_model: '', tts_model: '' };
 
@@ -67,6 +69,7 @@ export default function EpisodeStudio() {
   const [busy, setBusy] = useState(false);
   const [actions, setActions] = useState<Record<string, NodeActionResult>>({});
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [frameAssets, setFrameAssets] = useState<FrameAsset[]>([]);
 
   const applyStatus = useCallback((next: ProjectStatus) => {
     setStatus(next);
@@ -122,6 +125,24 @@ export default function EpisodeStudio() {
       cancelled = true;
     };
   }, [projectId, applyStatus]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setFrameAssets([]);
+      return;
+    }
+    let cancelled = false;
+    listFrameAssets(projectId)
+      .then(assets => {
+        if (!cancelled) setFrameAssets(assets);
+      })
+      .catch(() => {
+        if (!cancelled) setFrameAssets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, status]);
 
   const running = useMemo(
     () => (status?.nodes || []).some(node => node.status === 'running' || node.node_state === 'running'),
@@ -188,9 +209,9 @@ export default function EpisodeStudio() {
     if (bad) setError(result.message || `节点状态：${statusLabel(result.status)}`);
   };
 
-  const onRun = (node: GraphNode) => run(async () => {
+  const onRun = (node: GraphNode, frames?: FrameChoice) => run(async () => {
     if (!projectId) return;
-    const result = await runNode(projectId, node.id, runPayload(node));
+    const result = await runNode(projectId, node.id, runPayload(node, frames));
     remember(node.id, result);
     await reload(projectId);
   });
@@ -366,7 +387,8 @@ export default function EpisodeStudio() {
                     draft={drafts[node.id] ?? promptOf(node)}
                     onDraft={text => setDrafts(currentDrafts => ({ ...currentDrafts, [node.id]: text }))}
                     onSavePrompt={() => onSavePrompt(node)}
-                    onRun={() => onRun(node)}
+                    frameAssets={frameAssets}
+                    onRun={frames => onRun(node, frames)}
                     onConfirm={() => run(async () => {
                       if (!projectId) return;
                       const result = await confirmThenReload(

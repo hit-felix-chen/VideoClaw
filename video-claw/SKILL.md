@@ -88,6 +88,8 @@ video-claw/                         ← skill 根目录
 
 视频节点没给 `model_id` 时，默认是 Seedance 2.5：`doubao-seedance-2-5-260628`，参考生视频。这不是 `models.video`（那一项默认仍是 `wan2.7-i2v`）。
 
+同一条 `run` 可以带 `first_frame_asset_id`，再带 `last_frame_asset_id` 就是首尾帧。两个值都是资产库里已有图片的资产 id。`continue_from_tail: true` 把上一镜头已经存好的尾帧资产当作这一镜的首帧，不从成片抽帧。模型没有对应能力时直接拒绝，中文原因，不报价、不入账。参考图（`@资产名`）和关键帧不能一起交。细节见 [keyframes.md](references/workflow/keyframes.md)。剧集节点卡片上可以选择这些资产，也可以勾选续接。
+
 Seedance 2.5 已核实时长是 4 到 30 秒，区间外提交 `-1`（允许 auto）。请求体里的 `duration` 被忽略。时长来自节点 metadata 的 `shot_duration`。默认时长是 -1，不会被当成计费秒数；不另给 `completion_tokens` 时，百万 token 的文档价格缩放不了，`run` 返回 `unavailable`，不写账本，也不要编一个价。
 
 没有文档 API 价格（未核实、无币种、或没有 http(s) 来源）的模型同样不出数字。
