@@ -347,6 +347,18 @@ def _frames_specified(params: dict) -> bool:
     return frames_specified(params)
 
 
+def _continue_flag(params: dict, metadata: object) -> bool:
+    from core.keyframes import continue_flag
+
+    return continue_flag(params, metadata)
+
+
+def _continue_specified(params: dict) -> bool:
+    from core.keyframes import continue_specified
+
+    return continue_specified(params)
+
+
 def _frame_field(params: dict, metadata: object, key: str):
     from core.keyframes import frame_id
 
@@ -356,9 +368,13 @@ def _frame_field(params: dict, metadata: object, key: str):
 def _pending_metadata(fields: dict) -> dict:
     """Store the quote, and the chosen frame ids when this run set them."""
     changes = {"pending_call": fields}
-    if fields.get("frames_specified"):
+    if fields.get("frames_specified") or fields.get("continue_from_tail"):
         changes["first_frame_asset_id"] = fields.get("first_frame_asset_id")
+    if fields.get("frames_specified"):
         changes["last_frame_asset_id"] = fields.get("last_frame_asset_id")
+    if fields.get("continue_specified"):
+        changes["continue_from_tail"] = True if fields.get("continue_from_tail") else None
+        changes["tail_source_node_id"] = fields.get("tail_source_node_id")
     return changes
 
 
@@ -613,6 +629,8 @@ class GraphExecutor:
                 message="model_id is required",
             )
         require_id(node_id, "node_id")
+        if modality == "video" or node.kind in _VIDEO:
+            fields = self._continue_tail(graph, node_id, fields)
         fields = self._prepare_keyframes(project_id, graph, node_id, fields)
         references, versions = self._context(project_id, fields)
         request, duration, _quantity = self._request(fields)
@@ -2278,6 +2296,17 @@ class GraphExecutor:
             body["result"] = {key: value for key, value in result.items() if key != "provider_called"}
         return body
 
+    def _continue_tail(self, graph: DependencyGraph, node_id: str, fields: dict) -> dict:
+        """Copy the previous shot's tail asset. Raises before any ledger write."""
+        from core.keyframes import KeyframeRejected, apply_continuation
+
+        if not fields.get("continue_from_tail"):
+            return fields
+        try:
+            return apply_continuation(graph, node_id, fields)
+        except KeyframeRejected as exc:
+            raise _GateError(str(exc)) from None
+
     def _prepare_keyframes(self, project_id: str, graph: DependencyGraph, node_id: str, fields: dict) -> dict:
         """Refuse a first-frame quote before authorize. Other calls pass through."""
         from core.keyframes import KeyframeRejected, prepare, requested
@@ -2330,6 +2359,8 @@ class GraphExecutor:
             "first_frame_asset_id": _frame_field(params, node.metadata, "first_frame_asset_id"),
             "last_frame_asset_id": _frame_field(params, node.metadata, "last_frame_asset_id"),
             "frames_specified": _frames_specified(params),
+            "continue_from_tail": _continue_flag(params, node.metadata),
+            "continue_specified": _continue_specified(params),
         }
 
     def _request(self, fields: dict) -> tuple[QuoteRequest, Optional[dict], Optional[float]]:

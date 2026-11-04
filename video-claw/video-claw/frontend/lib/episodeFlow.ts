@@ -91,6 +91,7 @@ export function formatQuote(quote: QuoteView | null | undefined): string {
 export interface FrameChoice {
   first_frame_asset_id: string;
   last_frame_asset_id: string;
+  continue_from_tail?: boolean;
 }
 
 /** Fields the executor already stores on the node. A run sends these back. */
@@ -112,8 +113,9 @@ export function runPayload(node: NodeView, frames?: FrameChoice): Record<string,
     body[key] = value;
   }
   if (isVideoNode(node) && frames) {
-    body.first_frame_asset_id = frames.first_frame_asset_id;
+    body.first_frame_asset_id = frames.continue_from_tail ? '' : frames.first_frame_asset_id;
     body.last_frame_asset_id = frames.last_frame_asset_id;
+    body.continue_from_tail = Boolean(frames.continue_from_tail);
   }
   return body;
 }

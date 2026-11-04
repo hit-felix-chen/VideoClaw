@@ -20,6 +20,10 @@ mutually exclusive tasks. A model whose registered adapter abilities do not
 include ``first_frame_i2v`` or ``start_end_frame_i2v`` is refused in Chinese
 before a quote is authorized.
 
+``continue_from_tail`` copies the previous shot's stored ``last_frame_asset_id``
+into this shot's first frame when the quote is built. It does not extract a
+frame from the previous video.
+
 Sources checked 2026-11-03:
 
 - https://ark.volcengine.com/region:cn-beijing/docs/seedance-2-5
@@ -39,6 +43,11 @@ FRAME_KEYS = ("first_frame_asset_id", "last_frame_asset_id")
 
 MIXED_REFERENCES = "首帧与参考图不能同时使用"
 LAST_WITHOUT_FIRST = "只指定了尾帧，没有首帧"
+CONTINUE_WITH_FIRST = "续接尾帧时不能再手选首帧"
+NO_PREVIOUS_SHOT = "没有上一镜头，不能续接尾帧"
+NO_TAIL_ASSET = "上一镜头没有尾帧资产，不能续接"
+AMBIGUOUS_PREVIOUS = "有多个上一镜头，不能确定尾帧"
+_VIDEO_KINDS = frozenset({"shot_segment", "segment", "video", "draft_video", "final_video"})
 
 
 class KeyframeRejected(Exception):
@@ -63,6 +72,72 @@ def frame_id(params: dict, metadata: object, key: str) -> Optional[str]:
         return _clean(params.get(key))
     stored = metadata.get(key) if isinstance(metadata, dict) else None
     return _clean(stored)
+
+
+def continue_flag(params: dict, metadata: object) -> bool:
+    """Explicit false clears. A missing field keeps the stored choice."""
+    if "continue_from_tail" in params and params.get("continue_from_tail") is not None:
+        return bool(params.get("continue_from_tail"))
+    if isinstance(metadata, dict):
+        return bool(metadata.get("continue_from_tail"))
+    return False
+
+
+def continue_specified(params: dict) -> bool:
+    return "continue_from_tail" in params and params.get("continue_from_tail") is not None
+
+
+def _previous_video(graph, node_id: str):
+    """The shot whose tail frame continues into ``node_id``.
+
+    One continuity predecessor wins. Several are ambiguous. Otherwise the
+    previous video node in the same episode, in topological order.
+    """
+    chosen = []
+    for edge in graph.continuity_refs(node_id):
+        pred_id = edge.get("predecessor") if isinstance(edge, dict) else None
+        if not isinstance(pred_id, str) or not pred_id:
+            continue
+        if graph.node(pred_id).kind in _VIDEO_KINDS:
+            chosen.append(pred_id)
+    if len(chosen) > 1:
+        raise KeyframeRejected(AMBIGUOUS_PREVIOUS)
+    if len(chosen) == 1:
+        return graph.node(chosen[0])
+    node = graph.node(node_id)
+    episode = node.episode_id
+    if isinstance(episode, str) and episode:
+        ordered = list(graph.nodes_in_episode(episode))
+    else:
+        ordered = list(graph.topological_order())
+    videos = [item for item in ordered if graph.node(item).kind in _VIDEO_KINDS]
+    if node_id not in videos:
+        raise KeyframeRejected(NO_PREVIOUS_SHOT)
+    index = videos.index(node_id)
+    if index == 0:
+        raise KeyframeRejected(NO_PREVIOUS_SHOT)
+    return graph.node(videos[index - 1])
+
+
+def apply_continuation(graph, node_id: str, fields: dict) -> dict:
+    """Use the previous shot's stored last-frame asset as this shot's first frame.
+
+    The id is copied. Nothing is extracted from a video file. Called once when
+    the quote is built, so a later confirm keeps that same asset id.
+    """
+    if not fields.get("continue_from_tail"):
+        return fields
+    if _clean(fields.get("first_frame_asset_id")):
+        raise KeyframeRejected(CONTINUE_WITH_FIRST)
+    previous = _previous_video(graph, node_id)
+    metadata = previous.metadata if isinstance(previous.metadata, dict) else {}
+    tail = _clean(metadata.get("last_frame_asset_id"))
+    if not tail:
+        raise KeyframeRejected(NO_TAIL_ASSET)
+    updated = dict(fields)
+    updated["first_frame_asset_id"] = tail
+    updated["tail_source_node_id"] = previous.id
+    return updated
 
 
 def requested(fields: dict) -> bool:

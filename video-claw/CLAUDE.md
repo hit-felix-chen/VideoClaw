@@ -166,7 +166,9 @@ Resolved `@` mentions and keyframes are refused together: `首帧与参考图不
 
 On submit, ids become disk paths (`image_path`, `last_image_path`) and `reference_image_paths` is empty. Seedance content uses the official Ark fields: `type` `image_url`, `image_url.url`, `role` `first_frame` or `last_frame`. For Seedance 2.5, `ratio_by_mode` allows only `adaptive` on these two modes, so an omitted ratio is sent as `adaptive`. A documented price is unchanged: a still image is not `includes_video_input`. A model with no documented API price still has no min/max.
 
-The episode node card lists library assets that already have an image and sends the choice on `run`. Tail-frame continuation (the previous shot's last-frame asset as this shot's first frame) is a separate change.
+The episode node card lists library assets that already have an image and sends the choice on `run`.
+
+`continue_from_tail` copies the previous shot's stored `last_frame_asset_id` onto this shot's `first_frame_asset_id` when the quote is built. Confirm keeps that copied id. It does not read a generated video. One continuity predecessor is the previous shot. Several continuity predecessors are `有多个上一镜头，不能确定尾帧`. With none, the previous video node in the same episode (topological order) is used. No previous shot is `没有上一镜头，不能续接尾帧`. A previous shot with no stored tail asset is `上一镜头没有尾帧资产，不能续接`. A hand-picked first frame together with continuation is `续接尾帧时不能再手选首帧`. The copied id then goes through the same ability, library, and reference checks as a hand-picked first frame. A blocking edge still blocks the node; the tail asset itself does not require the previous shot to be `done`.
 
 ### Model registry and keys
 

@@ -61,15 +61,19 @@ export default function NodeCard({
   const [cap, setCap] = useState('');
   const savedFirst = typeof node.metadata?.first_frame_asset_id === 'string' ? node.metadata.first_frame_asset_id : '';
   const savedLast = typeof node.metadata?.last_frame_asset_id === 'string' ? node.metadata.last_frame_asset_id : '';
+  const savedContinue = node.metadata?.continue_from_tail === true;
   const [firstFrame, setFirstFrame] = useState(savedFirst);
   const [lastFrame, setLastFrame] = useState(savedLast);
+  const [continueTail, setContinueTail] = useState(savedContinue);
   useEffect(() => {
     setFirstFrame(savedFirst);
     setLastFrame(savedLast);
-  }, [node.id, savedFirst, savedLast]);
+    setContinueTail(savedContinue);
+  }, [node.id, savedFirst, savedLast, savedContinue]);
   const frames: FrameChoice = {
-    first_frame_asset_id: firstFrame,
-    last_frame_asset_id: firstFrame ? lastFrame : '',
+    first_frame_asset_id: continueTail ? '' : firstFrame,
+    last_frame_asset_id: continueTail || firstFrame ? lastFrame : '',
+    continue_from_tail: continueTail,
   };
   const quote = node.quote || (action?.node_id === node.id ? action.quote : null);
   const showRetry = needsVideoRetry(node);
@@ -130,7 +134,8 @@ export default function NodeCard({
           <label className="block text-xs text-gray-500">
             首帧资产
             <select
-              value={firstFrame}
+              value={continueTail ? '' : firstFrame}
+              disabled={continueTail}
               onChange={event => {
                 const next = event.target.value;
                 setFirstFrame(next);
@@ -147,8 +152,8 @@ export default function NodeCard({
           <label className="block text-xs text-gray-500">
             尾帧资产
             <select
-              value={firstFrame ? lastFrame : ''}
-              disabled={!firstFrame}
+              value={continueTail || firstFrame ? lastFrame : ''}
+              disabled={!continueTail && !firstFrame}
               onChange={event => setLastFrame(event.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-1.5 text-sm text-gray-800 disabled:bg-gray-50"
             >
@@ -161,6 +166,14 @@ export default function NodeCard({
           {(frameAssets || []).length === 0 && (
             <p className="text-xs text-gray-400 sm:col-span-2">资产库里还没有带图片的素材。</p>
           )}
+          <label className="flex items-center gap-2 text-xs text-gray-600 sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={continueTail}
+              onChange={event => setContinueTail(event.target.checked)}
+            />
+            续接上一镜头的尾帧作为首帧
+          </label>
         </div>
       )}
 

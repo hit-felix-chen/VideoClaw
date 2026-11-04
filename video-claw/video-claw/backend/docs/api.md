@@ -283,6 +283,7 @@
 | `asset_id`、`look_id` | 可选。用来列出已有图片版本 |
 | `first_frame_asset_id` | 可选。资产库里已有图片的资产 id，作为首帧。空字符串清掉节点上已存的 id；省略则沿用 |
 | `last_frame_asset_id` | 可选。同上，作为尾帧。必须和首帧一起给出 |
+| `continue_from_tail` | 可选布尔。为 true 时，用上一镜头已保存的 `last_frame_asset_id` 作为本镜头首帧。省略则沿用节点上的值；`false` 清掉 |
 | `duration` | 可选。视频节点接受该字段并忽略。时长只看模型能力与节点 metadata 的 `shot_duration` |
 
 `run_node` / `regenerate` / `confirm` / `decline` / `raise_budget` / `decline_budget` 的节点响应来自 `_pack`，字段为：
@@ -318,6 +319,8 @@
 调用方传的 `duration` 不改变上面的结果。响应里的 `duration` 仍是能力说明：`min` 4，`max` 30，`default` -1，`allow_auto` true，`verified` true。
 
 带了 `first_frame_asset_id`（以及可选的 `last_frame_asset_id`）时，在报价之前先查关键帧。资产必须已经在 `ImageStore` / `BlobStore` 里，并且文件在磁盘上。模型的 `adapter_abilities`（空则看 `abilities`）没有 `first_frame_i2v` 或 `start_end_frame_i2v` 时，HTTP 400，`detail` 为 `模型 {id} 不支持首帧生视频` 或 `模型 {id} 不支持首尾帧生视频`。只给尾帧是 `只指定了尾帧，没有首帧`。资产没有图片是 `首帧资产不在资产库中` 或 `尾帧资产不在资产库中`。提示词里已经解析出的参考图和关键帧不能一起交：`首帧与参考图不能同时使用`。这些拒绝不写账本，也不写 `submit_dispatched`。无密钥 409 仍是确认时的另一道检查，文案不变。没有文档价格的模型仍然 `unavailable`，不出数字；有价格的模型不因为多了一张静帧就改 `includes_video_input`。
+
+`continue_from_tail: true` 在报价前把上一镜头 metadata 里的 `last_frame_asset_id` 抄成这一镜的首帧。不从成片抽帧。只有一条 `continuity` 前驱时用那一镜；多条是 400：`有多个上一镜头，不能确定尾帧`。没有这种边时，用同一集拓扑序里的上一个视频节点。没有上一镜头是 `没有上一镜头，不能续接尾帧`。上一镜头没存尾帧资产是 `上一镜头没有尾帧资产，不能续接`。同时又手选了首帧是 `续接尾帧时不能再手选首帧`。抄过来的 id 再走上面的能力和资产检查。挡住本节点的边仍然要先完成；尾帧资产本身不要求上一镜头已经 `done`。
 
 Seedance 2.5 首帧 / 首尾帧提交使用官方字段：`content[].type` = `image_url`，`content[].image_url.url`，`content[].role` = `first_frame` 或 `last_frame`。这两种任务的 `ratio` 只能是 `adaptive`（注册表 `ratio_by_mode`）。和 `reference_image` 互斥。依据是火山方舟《Seedance 2.5 教程》和《创建视频生成任务 API》。提交前才把资产 id 换成磁盘路径。
 

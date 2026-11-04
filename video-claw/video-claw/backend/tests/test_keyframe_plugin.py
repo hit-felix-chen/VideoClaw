@@ -4,7 +4,14 @@ import pytest
 
 from config import Config
 from core.executor import GraphExecutor, _GateError, _NoVendorKey
-from core.keyframes import LAST_WITHOUT_FIRST, MIXED_REFERENCES
+from core.keyframes import (
+    AMBIGUOUS_PREVIOUS,
+    CONTINUE_WITH_FIRST,
+    LAST_WITHOUT_FIRST,
+    MIXED_REFERENCES,
+    NO_PREVIOUS_SHOT,
+    NO_TAIL_ASSET,
+)
 from graph.dependency_graph import DependencyGraph
 from models.middle.ids import DEFAULT_REFERENCE_VIDEO_MODEL
 from storage import AssetStore, Database, GraphStore, LedgerStore, ProjectStore
@@ -270,6 +277,138 @@ def test_a_model_without_a_documented_price_still_has_no_number(conn):
     assert held["status"] == "unavailable"
     assert held["quote"]["min"] is None
     assert held["quote"]["max"] is None
+    assert _rows(conn, project_id) == []
+
+
+def _shot(graph, node_id, model_id=SEEDANCE, **extra):
+    metadata = {
+        "model_id": model_id,
+        "resolution": "720p",
+        "includes_video_input": False,
+        "completion_tokens": 1_000_000,
+        "shot_duration": 6,
+        "text": "下一镜",
+    }
+    metadata.update(extra)
+    graph.add_node(node_id, kind="shot_segment", episode_id="ep1", metadata=metadata)
+
+
+def _chain(conn, *, edge=None):
+    project = ProjectStore.create(conn, "第1集", budget_cap=200)
+    project_id = project["id"]
+    tail_asset = AssetStore.create(conn, project_id=project_id, name="上一镜尾帧", kind="setting")
+    path = _portrait(conn, tail_asset["id"], payload=b"tail-frame-bytes")
+    graph = DependencyGraph()
+    _shot(graph, "shot-a", last_frame_asset_id=tail_asset["id"], text="上一镜")
+    _shot(graph, "shot-b")
+    if edge:
+        graph.add_edge(edge[0], edge[1], kind=edge[2] if len(edge) > 2 else "hard")
+    GraphStore.save(conn, project_id, graph.to_dict())
+    return project_id, tail_asset, path
+
+
+def test_previous_tail_asset_becomes_the_next_first_frame(conn):
+    project_id, tail_asset, path = _chain(conn)
+    adapter = RecordingAdapter()
+    executor = GraphExecutor(conn, video_adapter=adapter)
+    held = executor.run_node(project_id, "shot-b", {"continue_from_tail": True, "first_frame_asset_id": ""})
+    assert held["gate"] == "confirm"
+    assert held["quote"]["max"] == 70.0
+    assert adapter.calls == []
+    assert _rows(conn, project_id) == []
+    stored = _metadata(conn, project_id, "shot-b")
+    assert stored["first_frame_asset_id"] == tail_asset["id"]
+    assert stored["continue_from_tail"] is True
+    assert stored["tail_source_node_id"] == "shot-a"
+    done = executor.confirm(project_id, "shot-b")
+    assert done["provider_called"] is True
+    assert done["spent"] is True
+    params = adapter.calls[0]["params"]
+    assert params["generation_mode"] == "first_frame"
+    assert params["image_path"] == path
+    assert params["ability"] == "first_frame_i2v"
+    assert tail_asset["id"] not in params["image_path"]
+    result = _metadata(conn, project_id, "shot-b")["result"]
+    assert result["first_frame_asset_id"] == tail_asset["id"]
+    assert path not in str(result)
+
+
+def test_continuation_refuses_without_a_tail_or_a_previous_shot(conn):
+    project_id, _tail, _path = _chain(conn)
+    graph = DependencyGraph.from_dict(GraphStore.load(conn, project_id))
+    graph.update_metadata("shot-a", last_frame_asset_id=None)
+    GraphStore.save(conn, project_id, graph.to_dict())
+    with pytest.raises(_GateError, match=NO_TAIL_ASSET):
+        GraphExecutor(conn).run_node(project_id, "shot-b", {"continue_from_tail": True})
+    assert _rows(conn, project_id) == []
+
+    alone_id, hero = _project(conn)
+    _portrait(conn, hero["id"])
+    with pytest.raises(_GateError, match=NO_PREVIOUS_SHOT):
+        GraphExecutor(conn).run_node(alone_id, "video", {"continue_from_tail": True})
+    assert _rows(conn, alone_id) == []
+
+    project_id, tail_asset, _path = _chain(conn)
+    with pytest.raises(_GateError, match=CONTINUE_WITH_FIRST):
+        GraphExecutor(conn).run_node(
+            project_id,
+            "shot-b",
+            {"continue_from_tail": True, "first_frame_asset_id": tail_asset["id"]},
+        )
+    assert _rows(conn, project_id) == []
+
+
+def test_continuation_follows_one_continuity_edge_and_rejects_two(conn):
+    project = ProjectStore.create(conn, "第1集", budget_cap=200)
+    project_id = project["id"]
+    from_a = AssetStore.create(conn, project_id=project_id, name="甲尾", kind="setting")
+    from_c = AssetStore.create(conn, project_id=project_id, name="丙尾", kind="setting")
+    path_c = _portrait(conn, from_c["id"], payload=b"from-c")
+    _portrait(conn, from_a["id"], payload=b"from-a")
+    graph = DependencyGraph()
+    _shot(graph, "shot-a", last_frame_asset_id=from_a["id"], text="甲")
+    _shot(graph, "shot-c", last_frame_asset_id=from_c["id"], text="丙")
+    _shot(graph, "shot-b")
+    graph.add_edge("shot-c", "shot-b", kind="continuity", blocks=False)
+    GraphStore.save(conn, project_id, graph.to_dict())
+    adapter = RecordingAdapter()
+    held = GraphExecutor(conn, video_adapter=adapter).run_node(
+        project_id, "shot-b", {"continue_from_tail": True}
+    )
+    assert held["gate"] == "confirm"
+    assert _metadata(conn, project_id, "shot-b")["tail_source_node_id"] == "shot-c"
+    GraphExecutor(conn, video_adapter=adapter).confirm(project_id, "shot-b")
+    assert adapter.calls[0]["params"]["image_path"] == path_c
+
+    other = ProjectStore.create(conn, "两路", budget_cap=200)
+    other_id = other["id"]
+    left = AssetStore.create(conn, project_id=other_id, name="左", kind="setting")
+    right = AssetStore.create(conn, project_id=other_id, name="右", kind="setting")
+    _portrait(conn, left["id"], payload=b"left-tail")
+    _portrait(conn, right["id"], payload=b"right-tail")
+    both = DependencyGraph()
+    _shot(both, "shot-a", last_frame_asset_id=left["id"], text="甲")
+    _shot(both, "shot-c", last_frame_asset_id=right["id"], text="丙")
+    _shot(both, "shot-b")
+    both.add_edge("shot-a", "shot-b", kind="continuity", blocks=False)
+    both.add_edge("shot-c", "shot-b", kind="continuity", blocks=False)
+    GraphStore.save(conn, other_id, both.to_dict())
+    with pytest.raises(_GateError, match=AMBIGUOUS_PREVIOUS):
+        GraphExecutor(conn).run_node(other_id, "shot-b", {"continue_from_tail": True})
+    assert _rows(conn, other_id) == []
+
+
+def test_continuation_still_refuses_a_model_that_cannot_take_a_first_frame(conn):
+    project = ProjectStore.create(conn, "第1集", budget_cap=200)
+    project_id = project["id"]
+    tail_asset = AssetStore.create(conn, project_id=project_id, name="尾", kind="setting")
+    _portrait(conn, tail_asset["id"])
+    graph = DependencyGraph()
+    _shot(graph, "shot-a", model_id=NO_FIRST, last_frame_asset_id=tail_asset["id"], text="上一镜")
+    _shot(graph, "shot-b", model_id=NO_FIRST)
+    GraphStore.save(conn, project_id, graph.to_dict())
+    with pytest.raises(_GateError, match="不支持首帧生视频"):
+        GraphExecutor(conn).run_node(project_id, "shot-b", {"continue_from_tail": True})
     assert _rows(conn, project_id) == []
 
 

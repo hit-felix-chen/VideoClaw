@@ -10,6 +10,18 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 
 `last_frame_asset_id` 可以省略。省略一个字段会沿用节点 metadata 里已有的 id。空字符串会清掉它。
 
+续接上一镜头时不要再传首帧 id：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}/run" \
+  -H "Content-Type: application/json" \
+  -d '{"continue_from_tail": true}'
+```
+
+这一步只读取上一镜头 metadata 里的 `last_frame_asset_id`，把它抄到本镜头的 `first_frame_asset_id`。不从视频文件抽帧，也不调用 `return_last_frame`。报价写好之后，`confirm` 用抄下来的那个 id，不会因为上一镜头后来换了尾帧而改口。
+
+上一镜头的确定方式：只有一条指向本镜头的 `continuity` 边时，用那条边的前驱。有多条视频前驱时拒绝。没有这种边时，用同一集里拓扑序的上一个视频节点。挡住本镜头的边仍然要先完成；尾帧资产本身不要求上一镜头已经 `done`。
+
 ## 资产从哪来
 
 只能是 `ImageStore` 里已经挂在某个资产上的图片，并且 `BlobStore` 里的文件还在磁盘上。不接受临时上传，不抽视频帧，也不调用方舟的 `return_last_frame`。剧集节点卡片只列出「已经有图片」的资产。
@@ -25,6 +37,10 @@ curl -X POST "http://127.0.0.1:8000/api/v2/projects/{project_id}/nodes/{node_id}
 | 只给了尾帧 | `只指定了尾帧，没有首帧` |
 | 资产没有可用图片 | `首帧资产不在资产库中` 或 `尾帧资产不在资产库中` |
 | 提示词里的 `@资产名` 已经解析成参考图 | `首帧与参考图不能同时使用` |
+| `continue_from_tail` 同时又手选了首帧 | `续接尾帧时不能再手选首帧` |
+| 没有上一镜头 | `没有上一镜头，不能续接尾帧` |
+| 上一镜头没有保存尾帧资产 | `上一镜头没有尾帧资产，不能续接` |
+| 多条 continuity 视频前驱 | `有多个上一镜头，不能确定尾帧` |
 
 能力看注册表的 `adapter_abilities`。这张表为空时才看 `abilities`。Seedance 2.5（`doubao-seedance-2-5-260628`）两种都有。`wan2.7-r2v` 两种都没有。`wan2.6-i2v-flash` 只有首帧。
 

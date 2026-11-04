@@ -22,6 +22,8 @@ class NodeRunRequest(BaseModel):
     # Library image asset ids. Empty string clears a stored id. Omitted keeps it.
     first_frame_asset_id: Optional[str] = None
     last_frame_asset_id: Optional[str] = None
+    # Use the previous shot's stored last-frame asset as this shot's first frame.
+    continue_from_tail: Optional[bool] = None
     # Accepted and ignored for video nodes. Duration comes from the model.
     duration: Optional[float] = None
 
