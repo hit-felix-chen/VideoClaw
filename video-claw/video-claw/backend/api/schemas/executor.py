@@ -19,6 +19,9 @@ class NodeRunRequest(BaseModel):
     text: Optional[str] = None
     asset_id: Optional[str] = None
     look_id: Optional[str] = None
+    # Library image asset ids. Empty string clears a stored id. Omitted keeps it.
+    first_frame_asset_id: Optional[str] = None
+    last_frame_asset_id: Optional[str] = None
     # Accepted and ignored for video nodes. Duration comes from the model.
     duration: Optional[float] = None
 

@@ -281,6 +281,8 @@
 | `input_tokens`、`output_tokens` | 可选。文本模型要两边都有才出单价 |
 | `text` | 可选。提示词，也是 `@资产名` 的解析文本 |
 | `asset_id`、`look_id` | 可选。用来列出已有图片版本 |
+| `first_frame_asset_id` | 可选。资产库里已有图片的资产 id，作为首帧。空字符串清掉节点上已存的 id；省略则沿用 |
+| `last_frame_asset_id` | 可选。同上，作为尾帧。必须和首帧一起给出 |
 | `duration` | 可选。视频节点接受该字段并忽略。时长只看模型能力与节点 metadata 的 `shot_duration` |
 
 `run_node` / `regenerate` / `confirm` / `decline` / `raise_budget` / `decline_budget` 的节点响应来自 `_pack`，字段为：
@@ -314,6 +316,10 @@
 - 选出了一行百万 token 价格，但没有可缩放的数量。`duration.default` 是 -1，不会被当成计费秒数；不传 `completion_tokens` 时 `quantity` 仍是 null。
 
 调用方传的 `duration` 不改变上面的结果。响应里的 `duration` 仍是能力说明：`min` 4，`max` 30，`default` -1，`allow_auto` true，`verified` true。
+
+带了 `first_frame_asset_id`（以及可选的 `last_frame_asset_id`）时，在报价之前先查关键帧。资产必须已经在 `ImageStore` / `BlobStore` 里，并且文件在磁盘上。模型的 `adapter_abilities`（空则看 `abilities`）没有 `first_frame_i2v` 或 `start_end_frame_i2v` 时，HTTP 400，`detail` 为 `模型 {id} 不支持首帧生视频` 或 `模型 {id} 不支持首尾帧生视频`。只给尾帧是 `只指定了尾帧，没有首帧`。资产没有图片是 `首帧资产不在资产库中` 或 `尾帧资产不在资产库中`。提示词里已经解析出的参考图和关键帧不能一起交：`首帧与参考图不能同时使用`。这些拒绝不写账本，也不写 `submit_dispatched`。无密钥 409 仍是确认时的另一道检查，文案不变。没有文档价格的模型仍然 `unavailable`，不出数字；有价格的模型不因为多了一张静帧就改 `includes_video_input`。
+
+Seedance 2.5 首帧 / 首尾帧提交使用官方字段：`content[].type` = `image_url`，`content[].image_url.url`，`content[].role` = `first_frame` 或 `last_frame`。这两种任务的 `ratio` 只能是 `adaptive`（注册表 `ratio_by_mode`）。和 `reference_image` 互斥。依据是火山方舟《Seedance 2.5 教程》和《创建视频生成任务 API》。提交前才把资产 id 换成磁盘路径。
 
 视频报价可用：节点改为 `awaiting_user`，`gate` 为 `confirm`，`call_confirmed` false，`submitted` false。若 `used + committed + quote.max` 已超过 `budget_cap`，`over_budget` 为 true。`message` 是 `pause_message`：三个数字在报价有币种时各带 ` {currency}` 后缀（`min` 等于 `max` 时中间只有一个数）。此时仍没有账本行。`budget_cap` 为 null 时不判超支。
 

@@ -66,6 +66,19 @@ describe('episode view', () => {
     expect(retryRequest(false, false)).toEqual({ force_new: false });
     expect(() => retryRequest(true, false)).toThrow(/第二次确认/);
     expect(retryRequest(true, true)).toEqual({ force_new: true });
+    expect(runPayload({
+      id: 'video',
+      kind: 'shot_segment',
+      metadata: { model_id: 'doubao-seedance-2-5-260628', text: '她离开' },
+    }, {
+      first_frame_asset_id: 'asset-first',
+      last_frame_asset_id: '',
+    })).toEqual({
+      model_id: 'doubao-seedance-2-5-260628',
+      text: '她离开',
+      first_frame_asset_id: 'asset-first',
+      last_frame_asset_id: '',
+    });
     expect(FORCE_NEW_COPY).toBe('新建会产生新的一笔厂商生成（可能再次扣费）');
   });
 

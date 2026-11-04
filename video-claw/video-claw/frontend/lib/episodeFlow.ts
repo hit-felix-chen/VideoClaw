@@ -88,8 +88,13 @@ export function formatQuote(quote: QuoteView | null | undefined): string {
   return '报价不可用';
 }
 
+export interface FrameChoice {
+  first_frame_asset_id: string;
+  last_frame_asset_id: string;
+}
+
 /** Fields the executor already stores on the node. A run sends these back. */
-export function runPayload(node: NodeView): Record<string, unknown> {
+export function runPayload(node: NodeView, frames?: FrameChoice): Record<string, unknown> {
   const meta = node.metadata || {};
   const body: Record<string, unknown> = {};
   for (const key of [
@@ -105,6 +110,10 @@ export function runPayload(node: NodeView): Record<string, unknown> {
     const value = meta[key];
     if (value === undefined || value === null || value === '') continue;
     body[key] = value;
+  }
+  if (isVideoNode(node) && frames) {
+    body.first_frame_asset_id = frames.first_frame_asset_id;
+    body.last_frame_asset_id = frames.last_frame_asset_id;
   }
   return body;
 }

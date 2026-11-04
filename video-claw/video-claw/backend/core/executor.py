@@ -341,6 +341,27 @@ def _look_by_asset(references: Any) -> dict:
     return found
 
 
+def _frames_specified(params: dict) -> bool:
+    from core.keyframes import frames_specified
+
+    return frames_specified(params)
+
+
+def _frame_field(params: dict, metadata: object, key: str):
+    from core.keyframes import frame_id
+
+    return frame_id(params, metadata, key)
+
+
+def _pending_metadata(fields: dict) -> dict:
+    """Store the quote, and the chosen frame ids when this run set them."""
+    changes = {"pending_call": fields}
+    if fields.get("frames_specified"):
+        changes["first_frame_asset_id"] = fields.get("first_frame_asset_id")
+        changes["last_frame_asset_id"] = fields.get("last_frame_asset_id")
+    return changes
+
+
 def _image_disk_path(conn, asset_id: str, look_id: Optional[str]) -> Optional[str]:
     """File for this reference. Prefer the mentioned look, else the asset image."""
     from pathlib import Path
@@ -592,6 +613,7 @@ class GraphExecutor:
                 message="model_id is required",
             )
         require_id(node_id, "node_id")
+        fields = self._prepare_keyframes(project_id, graph, node_id, fields)
         references, versions = self._context(project_id, fields)
         request, duration, _quantity = self._request(fields)
         priced = quote(request)
@@ -614,7 +636,7 @@ class GraphExecutor:
             message = ""
             if over and budget["cap"] is not None:
                 message = pause_message(budget["used"], priced, budget["cap"])
-            graph.update_metadata(node_id, pending_call=fields)
+            graph.update_metadata(node_id, **_pending_metadata(fields))
             self._to_awaiting(graph, node_id)
             self._save(project_id, graph)
             return self._pack(
@@ -699,6 +721,14 @@ class GraphExecutor:
         existing = self._awaiting_entry(project_id, node_id)
         if existing is not None:
             return self._held_budget(project_id, graph, node_id, existing)
+        # A retry that only polls a task already sent must not re-check frames.
+        polling_retry = (
+            retry
+            and not force_new
+            and (_dispatched(node) or _vendor_task_id(node) is not None)
+        )
+        if not polling_retry:
+            fields = self._prepare_keyframes(project_id, graph, node_id, fields)
         self._retrying = retry
         self._force_new = bool(force_new and retry)
         try:
@@ -1944,6 +1974,10 @@ class GraphExecutor:
                 "asset_id": fields.get("asset_id"),
                 "references": references,
                 "versions": versions,
+                "first_frame_asset_id": fields.get("first_frame_asset_id"),
+                "last_frame_asset_id": fields.get("last_frame_asset_id"),
+                "ratio": fields.get("ratio"),
+                "video_ratio": fields.get("video_ratio"),
                 "provider_called": False,
             }
         )
@@ -2080,6 +2114,9 @@ class GraphExecutor:
         params = _video_submit_params(project_id, node_id, fields, prepared, references, spec)
         try:
             params = self._with_reference_files(params, references)
+            from core.keyframes import bind_frame_files
+
+            params = bind_frame_files(self.conn, params)
         except Exception as exc:
             self._abort_reserved_video(project_id, graph, node_id, exc)
         meta = graph.node(node_id).metadata
@@ -2241,6 +2278,22 @@ class GraphExecutor:
             body["result"] = {key: value for key, value in result.items() if key != "provider_called"}
         return body
 
+    def _prepare_keyframes(self, project_id: str, graph: DependencyGraph, node_id: str, fields: dict) -> dict:
+        """Refuse a first-frame quote before authorize. Other calls pass through."""
+        from core.keyframes import KeyframeRejected, prepare, requested
+
+        if not requested(fields):
+            return fields
+        node = graph.node(node_id)
+        modality = fields.get("modality") or ""
+        if modality != "video" and node.kind not in _VIDEO:
+            return fields
+        references, _versions = self._context(project_id, fields)
+        try:
+            return prepare(self.conn, fields, references)
+        except KeyframeRejected as exc:
+            raise _GateError(str(exc)) from None
+
     def _fields(self, node, params: dict, modality: str) -> dict:
         model_id = params.get("model_id") or node.metadata.get("model_id") or ""
         if not isinstance(model_id, str):
@@ -2274,6 +2327,9 @@ class GraphExecutor:
             "asset_id": asset_id if isinstance(asset_id, str) and asset_id.strip() else None,
             "look_id": look_id if isinstance(look_id, str) and look_id.strip() else None,
             "duration": duration,
+            "first_frame_asset_id": _frame_field(params, node.metadata, "first_frame_asset_id"),
+            "last_frame_asset_id": _frame_field(params, node.metadata, "last_frame_asset_id"),
+            "frames_specified": _frames_specified(params),
         }
 
     def _request(self, fields: dict) -> tuple[QuoteRequest, Optional[dict], Optional[float]]:
